@@ -1,0 +1,64 @@
+rules:
+  - name: "Recon Chain"
+    description: "Port scan followed by directory fuzzing — active reconnaissance pattern."
+    conditions:
+      - port_scan
+      - dir_found
+    window_seconds: 300
+    chain_name: "Recon Chain"
+    severity: low
+
+  - name: "Web Attack Chain"
+    description: "Directory discovery followed by vulnerability detection — web exploitation pattern."
+    conditions:
+      - dir_found
+      - vuln_found
+    window_seconds: 180
+    chain_name: "Web Attack Chain"
+    severity: high
+
+  - name: "Credential Attack"
+    description: "Brute force login failures followed by a successful login — credential attack pattern."
+    conditions:
+      - login_failed
+      - login_success
+    window_seconds: 120
+    chain_name: "Credential Attack"
+    severity: high
+
+  - name: "Full Attack Chain"
+    description: "Port scan, vulnerability found, then successful exploitation — full kill chain."
+    conditions:
+      - port_scan
+      - vuln_found
+      - exploit_success
+    window_seconds: 600
+    chain_name: "Full Attack Chain"
+    severity: critical
+
+  - name: "SQL Injection Chain"
+    description: "Directory discovery followed by SQL injection finding — web SQL attack pattern."
+    conditions:
+      - dir_found
+      - sqli_found
+    window_seconds: 240
+    chain_name: "SQL Injection Chain"
+    severity: high
+
+  - name: "Post Exploitation"
+    description: "Successful exploit followed by lateral movement — post-exploitation pattern."
+    conditions:
+      - exploit_success
+      - lateral_movement
+    window_seconds: 300
+    chain_name: "Post Exploitation"
+    severity: critical
+
+  - name: "AD Attack Chain"
+    description: "Credential dumping followed by lateral movement — Active Directory attack pattern."
+    conditions:
+      - credential_dumped
+      - lateral_movement
+    window_seconds: 600
+    chain_name: "AD Attack Chain"
+    severity: critical
