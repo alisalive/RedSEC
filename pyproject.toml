@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "redsec"
-version = "0.1.0"
+version = "1.0.0"
 description = "Red team log aggregation and correlation tool with SEC integration"
 authors = [{name = "alisalive"}]
 readme = "README.md"

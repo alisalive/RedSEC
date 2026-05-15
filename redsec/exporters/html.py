@@ -12,7 +12,7 @@ from jinja2 import Environment
 
 from redsec.models.chain import AttackChain
 
-_REDSEC_VERSION = "0.1.0"
+_REDSEC_VERSION = "1.0.0"
 
 # ---------------------------------------------------------------------------
 # Colour palettes
