@@ -16,6 +16,9 @@ dependencies = [
     "click>=8.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["redsec*"]
+
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 
