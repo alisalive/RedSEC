@@ -34,7 +34,7 @@ SEC project: https://github.com/simple-evcorr/sec
 ## Installation
 
     git clone https://github.com/alisalive/RedSEC
-    cd redsec
+    cd RedSEC
     pip install -e .
 
 ---
@@ -201,10 +201,14 @@ Feed this file directly to SEC with: `sec --conf=rules.conf --input=redsec.log`
     │       ├── html.py
     │       └── json.py
     ├── tests/
-    ├── docs/
-    │   └── THEORETICAL_BACKGROUND.md
-    ├── CLAUDE.md
+    ├── .github/
+    │   └── workflows/
+    │       └── ci.yml
+    ├── LICENSE
+    ├── CONTRIBUTING.md
+    ├── THEORETICAL_BACKGROUND.md
     ├── README.md
+    ├── pytest.ini
     └── pyproject.toml
 
 ---
@@ -219,6 +223,6 @@ alisalive — https://github.com/alisalive
 
 SEC (Simple Event Correlator) by Risto Vaarandi — https://ristov.github.io/
 
-SEC is the core integration target of RedSEC. The EventGroup correlation
-model and the Single/EventGroup rule format are Vaarandi's original design.
+SEC is the core integration target of RedSEC. The Single/SingleWithThreshold
+rule format is inspired by Vaarandi's original SEC design.
 RedSEC would not exist without SEC.
