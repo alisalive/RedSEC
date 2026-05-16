@@ -63,6 +63,41 @@ class TestExportEvents:
         content = open(path).read()
         assert "172\\.16\\.0\\.5" in content
 
+    def test_pattern_includes_port_suffix_when_port_set(self, tmp_path):
+        event = RedSecEvent(
+            tool="nmap", event_type="port_scan", target="10.0.0.1",
+            severity="low", description="Open port 22/tcp on 10.0.0.1",
+            mitre_technique="T1046", port=22, protocol="tcp",
+        )
+        path = str(tmp_path / "out.conf")
+        SecExporter().export_events([event], path)
+        content = open(path).read()
+        assert ".*port 22" in content
+
+    def test_pattern_has_no_port_suffix_without_port(self, tmp_path):
+        event = _make_event(target="10.0.0.2")  # port not set
+        path = str(tmp_path / "out.conf")
+        SecExporter().export_events([event], path)
+        content = open(path).read()
+        assert ".*port" not in content
+
+    def test_two_events_same_host_different_ports_have_distinct_patterns(self, tmp_path):
+        e1 = RedSecEvent(
+            tool="nmap", event_type="port_scan", target="10.0.0.1",
+            severity="low", description="Open port 22/tcp", mitre_technique="T1046",
+            port=22, protocol="tcp",
+        )
+        e2 = RedSecEvent(
+            tool="nmap", event_type="port_scan", target="10.0.0.1",
+            severity="low", description="Open port 80/tcp", mitre_technique="T1046",
+            port=80, protocol="tcp",
+        )
+        path = str(tmp_path / "out.conf")
+        SecExporter().export_events([e1, e2], path)
+        content = open(path).read()
+        assert ".*port 22" in content
+        assert ".*port 80" in content
+
     def test_action_uses_write_not_pipe_echo(self, tmp_path):
         events = [_make_event()]
         path = str(tmp_path / "out.conf")

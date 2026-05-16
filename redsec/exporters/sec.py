@@ -46,9 +46,21 @@ class SecExporter:
 
     SEC rule types used:
 
-    * ``Single``     — fires once per matching log line (one per event).
-    * ``EventGroup`` — fires when a set of sub-patterns have all matched
-                       within a time window (chain completion rule).
+    * ``Single``               — fires once per matching log line; used for
+                                 standalone (uncorrelated) events only.
+    * ``Single`` (chain step)  — same type, but action tags the output with
+                                 the chain name so the completion rule can
+                                 count it.
+    * ``SingleWithThreshold``  — fires after ``thresh`` matching write outputs
+                                 appear within ``window`` seconds; used as the
+                                 chain-completion rule.
+
+    Rule separation contract
+    ------------------------
+    * ``export_events``  — standalone rules only; call when there are NO chains.
+    * ``export_chain``   — chain rules only (steps + completion) for one chain.
+    * ``export_all``     — chain rules only for every chain; never emits
+                           standalone rules to avoid duplicate matches.
     """
 
     # ------------------------------------------------------------------
@@ -56,14 +68,16 @@ class SecExporter:
     # ------------------------------------------------------------------
 
     def export_events(self, events: list[RedSecEvent], output_path: str) -> str:
-        """Write a SEC .conf file containing one rule per event.
+        """Write a SEC .conf file of standalone Single rules for uncorrelated events.
 
-        Each event is translated into a ``type=Single`` SEC rule whose
-        pattern matches the event's SEC log line format
-        (``TIMESTAMP TOOL EVENT_TYPE TARGET DESCRIPTION``).
+        Use this method only when the correlation engine produced no chains.
+        Each event becomes one ``type=Single`` rule whose pattern matches the
+        event's SEC log line format (``TIMESTAMP TOOL EVENT_TYPE TARGET ...``).
+        No ``SingleWithThreshold`` completion rule is emitted because there is
+        no chain structure to complete.
 
         Args:
-            events: List of RedSecEvent instances to export.
+            events: Uncorrelated RedSecEvent instances to export.
             output_path: Destination file path for the .conf output.
 
         Returns:
@@ -90,9 +104,13 @@ class SecExporter:
 
         1. A header comment with chain metadata (name, severity, MITRE
            techniques, event count, time range).
-        2. One ``type=Single`` rule per event in the chain.
-        3. A final ``type=EventGroup`` rule that fires when all events
-           in the chain have been observed, signalling chain completion.
+        2. One ``type=Single`` rule per event in the chain.  Each rule's
+           action writes a tagged line that the completion rule matches on.
+        3. A ``type=SingleWithThreshold`` completion rule that fires once
+           ``thresh`` tagged lines have been seen within ``window`` seconds.
+
+        No standalone rules are emitted; call ``export_events`` separately
+        for any uncorrelated events.
 
         Args:
             chain: The AttackChain to export.
@@ -133,9 +151,13 @@ class SecExporter:
     def export_all(self, chains: list[AttackChain], output_path: str) -> str:
         """Export all AttackChains into a single SEC .conf file.
 
-        Chains are written sequentially, each preceded by a separator
-        comment.  A global file header includes the RedSEC version and
-        the UTC generation timestamp.
+        Only chain rules are emitted — one ``type=Single`` step-rule per
+        event and one ``type=SingleWithThreshold`` completion rule per chain.
+        No standalone ``type=Single`` rules are generated, even if individual
+        events happen to share patterns with uncorrelated events, to prevent
+        duplicate matches in SEC.
+
+        Chains are written sequentially, each preceded by a separator comment.
 
         Args:
             chains: List of AttackChain instances to export.
@@ -203,7 +225,7 @@ class SecExporter:
         technique = event.mitre_technique or "N/A"
         chain_label = chain_name if chain_name else "standalone"
 
-        pattern = self._build_pattern(tool, event_type, event.target)
+        pattern = self._build_pattern(tool, event_type, event.target, event.port)
         desc = self._rule_desc(event, chain_label)
 
         return [
@@ -240,22 +262,40 @@ class SecExporter:
             f"thresh={len(chain.events)}",
         ]
 
-    def _build_pattern(self, tool: str, event_type: str, target: str) -> str:
+    def _build_pattern(
+        self,
+        tool: str,
+        event_type: str,
+        target: str,
+        port: int | None = None,
+    ) -> str:
         """Build a RegExp pattern matching a SEC log line for this event.
 
-        The pattern is intentionally broad on the timestamp (any prefix)
-        but anchored on tool, event_type, and target so it is specific
-        enough to avoid false positives from unrelated log lines.
+        The timestamp field is matched loosely (``\\S+``) while tool,
+        event_type, and target are anchored literally.  When a port number
+        is available it is appended as ``.*port <N>`` to match against the
+        description field of the log line, making the pattern unique even
+        when multiple events share the same tool, event_type, and target
+        (e.g. two nmap port scans on the same host but different ports).
+
+        Format without port::
+
+            \\S+ nmap port_scan 45\\.33\\.32\\.156
+
+        Format with port::
+
+            \\S+ nmap port_scan 45\\.33\\.32\\.156 .*port 22
 
         Args:
             tool: Tool name string (e.g. ``"nmap"``).
             event_type: Event type string (e.g. ``"port_scan"``).
             target: Target IP or domain (e.g. ``"192.168.1.1"``).
+            port: Optional port number to include in the pattern.
 
         Returns:
             A RegExp string suitable for SEC's ``pattern=`` field.
         """
-        return (
+        base = (
             r"\S+ "
             + re.escape(tool)
             + r" "
@@ -263,16 +303,20 @@ class SecExporter:
             + r" "
             + re.escape(target)
         )
+        if port is not None:
+            return base + r" .*port " + re.escape(str(port))
+        return base
 
     def _rule_desc(self, event: RedSecEvent, chain_name: str) -> str:
         """Return the ``desc=`` identifier string for an event's Single rule.
 
-        The desc is used as the EventGroup sub-pattern reference, so it
-        must be unique enough to identify the rule unambiguously.
+        The desc must be unique enough to identify the rule unambiguously
+        within a conf file (used internally by SEC to track which rules have
+        fired when evaluating ``SingleWithThreshold`` counts).
 
         Args:
             event: Source event.
-            chain_name: Chain or context label.
+            chain_name: Chain or context label (``"standalone"`` when none).
 
         Returns:
             A compact descriptor string with no special characters.
