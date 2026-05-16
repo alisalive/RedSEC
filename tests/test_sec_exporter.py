@@ -81,6 +81,30 @@ class TestExportEvents:
         content = open(path).read()
         assert ".*port" not in content
 
+    def test_pattern_includes_description_last_word_when_no_port(self, tmp_path):
+        event = RedSecEvent(
+            tool="ffuf", event_type="dir_found", target="scanme.nmap.org",
+            severity="low",
+            description="[403] http://scanme.nmap.org/.svn",
+            mitre_technique="T1083",
+        )
+        path = str(tmp_path / "out.conf")
+        SecExporter().export_events([event], path)
+        content = open(path).read()
+        assert r".*http://scanme\.nmap\.org/\.svn" in content
+
+    def test_port_takes_priority_over_description(self, tmp_path):
+        event = RedSecEvent(
+            tool="nmap", event_type="port_scan", target="10.0.0.1",
+            severity="low", description="Open port 22/tcp on 10.0.0.1",
+            mitre_technique="T1046", port=22, protocol="tcp",
+        )
+        path = str(tmp_path / "out.conf")
+        SecExporter().export_events([event], path)
+        content = open(path).read()
+        assert ".*port 22" in content
+        assert r"10\.0\.0\.1" not in content.split(".*port 22")[1].split("\n")[0]
+
     def test_two_events_same_host_different_ports_have_distinct_patterns(self, tmp_path):
         e1 = RedSecEvent(
             tool="nmap", event_type="port_scan", target="10.0.0.1",

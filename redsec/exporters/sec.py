@@ -225,7 +225,7 @@ class SecExporter:
         technique = event.mitre_technique or "N/A"
         chain_label = chain_name if chain_name else "standalone"
 
-        pattern = self._build_pattern(tool, event_type, event.target, event.port)
+        pattern = self._build_pattern(tool, event_type, event.target, event.port, event.description)
         desc = self._rule_desc(event, chain_label)
 
         return [
@@ -268,29 +268,38 @@ class SecExporter:
         event_type: str,
         target: str,
         port: int | None = None,
+        description: str = "",
     ) -> str:
         """Build a RegExp pattern matching a SEC log line for this event.
 
         The timestamp field is matched loosely (``\\S+``) while tool,
-        event_type, and target are anchored literally.  When a port number
-        is available it is appended as ``.*port <N>`` to match against the
-        description field of the log line, making the pattern unique even
-        when multiple events share the same tool, event_type, and target
-        (e.g. two nmap port scans on the same host but different ports).
+        event_type, and target are anchored literally.  A disambiguating
+        suffix is appended when possible so that multiple events with the
+        same tool/event_type/target each match only their own log line:
 
-        Format without port::
+        1. **Port available** — appends ``.*port <N>`` (nmap-style events)::
 
-            \\S+ nmap port_scan 45\\.33\\.32\\.156
+               \\S+ nmap port_scan 45\\.33\\.32\\.156 .*port 22
 
-        Format with port::
+        2. **No port, description provided** — appends ``.*<last_word>``
+           where *last_word* is the final space-separated token of the
+           description.  For URL-bearing descriptions (ffuf, feroxbuster)
+           this is typically the path or filename::
 
-            \\S+ nmap port_scan 45\\.33\\.32\\.156 .*port 22
+               \\S+ ffuf dir_found scanme\\.nmap\\.org .*\\.svn
+
+        3. **Neither** — base pattern only (broad, but no better anchor
+           exists)::
+
+               \\S+ nuclei vuln_found 192\\.168\\.1\\.1
 
         Args:
             tool: Tool name string (e.g. ``"nmap"``).
             event_type: Event type string (e.g. ``"port_scan"``).
             target: Target IP or domain (e.g. ``"192.168.1.1"``).
-            port: Optional port number to include in the pattern.
+            port: Optional port number; takes priority over description.
+            description: Optional event description; last word used when
+                         no port is available.
 
         Returns:
             A RegExp string suitable for SEC's ``pattern=`` field.
@@ -305,6 +314,9 @@ class SecExporter:
         )
         if port is not None:
             return base + r" .*port " + re.escape(str(port))
+        if description:
+            last_word = description.split()[-1]
+            return base + r" .*" + re.escape(last_word)
         return base
 
     def _rule_desc(self, event: RedSecEvent, chain_name: str) -> str:
