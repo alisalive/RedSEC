@@ -281,12 +281,12 @@ class SecExporter:
 
                \\S+ nmap port_scan 45\\.33\\.32\\.156 .*port 22
 
-        2. **No port, description provided** — appends ``.*<last_word>``
-           where *last_word* is the final space-separated token of the
-           description.  For URL-bearing descriptions (ffuf, feroxbuster)
-           this is typically the path or filename::
+        2. **No port, description provided** — scans tokens for the first
+           ``http://`` or ``https://`` URL and uses it as the anchor; falls
+           back to the last token if no URL is present.  URLs are unique per
+           ffuf/feroxbuster event and make the pattern maximally specific::
 
-               \\S+ ffuf dir_found scanme\\.nmap\\.org .*\\.svn
+               \\S+ ffuf dir_found scanme\\.nmap\\.org .*http://scanme\\.nmap\\.org/\\.svn
 
         3. **Neither** — base pattern only (broad, but no better anchor
            exists)::
@@ -315,8 +315,10 @@ class SecExporter:
         if port is not None:
             return base + r" .*port " + re.escape(str(port))
         if description:
-            last_word = description.split()[-1]
-            return base + r" .*" + re.escape(last_word)
+            words = description.split()
+            url = next((w for w in words if w.startswith(("http://", "https://"))), None)
+            anchor = url if url is not None else words[-1]
+            return base + r" .*" + re.escape(anchor)
         return base
 
     def _rule_desc(self, event: RedSecEvent, chain_name: str) -> str:

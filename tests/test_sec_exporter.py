@@ -81,17 +81,31 @@ class TestExportEvents:
         content = open(path).read()
         assert ".*port" not in content
 
-    def test_pattern_includes_description_last_word_when_no_port(self, tmp_path):
+    def test_pattern_uses_url_from_description_when_present(self, tmp_path):
         event = RedSecEvent(
             tool="ffuf", event_type="dir_found", target="scanme.nmap.org",
             severity="low",
-            description="[403] http://scanme.nmap.org/.svn",
+            description="[403] http://scanme.nmap.org/.svn trailing",
             mitre_technique="T1083",
         )
         path = str(tmp_path / "out.conf")
         SecExporter().export_events([event], path)
         content = open(path).read()
+        # URL is used, not the last word ("trailing")
         assert r".*http://scanme\.nmap\.org/\.svn" in content
+        assert "trailing" not in content.split("pattern=")[1].split("\n")[0]
+
+    def test_pattern_falls_back_to_last_word_when_no_url(self, tmp_path):
+        event = RedSecEvent(
+            tool="nuclei", event_type="vuln_found", target="10.0.0.1",
+            severity="high",
+            description="Reflected XSS via search param",
+            mitre_technique="T1190",
+        )
+        path = str(tmp_path / "out.conf")
+        SecExporter().export_events([event], path)
+        content = open(path).read()
+        assert r".*param" in content
 
     def test_port_takes_priority_over_description(self, tmp_path):
         event = RedSecEvent(
