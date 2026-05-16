@@ -118,21 +118,14 @@ class SecExporter:
         lines.append(f"# End     : {chain.end_time.isoformat()}")
         lines.append("")
 
-        event_blocks: list[tuple[str, str]] = []
         for idx, event in enumerate(chain.events, start=1):
             lines.append(f"# Step {idx}: {event.event_type} on {event.target}")
             lines.extend(self._single_rule(event, chain_name=chain.name))
             lines.append("")
-            tool = event.tool if isinstance(event.tool, str) else event.tool.value
-            etype = event.event_type if isinstance(event.event_type, str) else event.event_type.value
-            event_blocks.append((
-                self._build_pattern(tool, etype, event.target),
-                self._rule_desc(event, chain.name),
-            ))
 
-        # Chain-completion EventGroup rule.
-        lines.append("# Chain completion — fires when all steps above have matched")
-        lines.extend(self._eventgroup_rule(chain, event_blocks))
+        # Chain-completion SingleWithThreshold rule.
+        lines.append("# Chain completion — fires after thresh matching write outputs")
+        lines.extend(self._eventgroup_rule(chain))
         lines.append("")
 
         return self._write(output_path, lines)
@@ -171,20 +164,13 @@ class SecExporter:
             lines.append("#" + "=" * 77)
             lines.append("")
 
-            event_blocks: list[tuple[str, str]] = []
             for step_idx, event in enumerate(chain.events, start=1):
                 lines.append(f"# Chain {chain_idx} / Step {step_idx}: {event.event_type} on {event.target}")
                 lines.extend(self._single_rule(event, chain_name=chain.name))
                 lines.append("")
-                tool = event.tool if isinstance(event.tool, str) else event.tool.value
-                etype = event.event_type if isinstance(event.event_type, str) else event.event_type.value
-                event_blocks.append((
-                    self._build_pattern(tool, etype, event.target),
-                    self._rule_desc(event, chain.name),
-                ))
 
             lines.append(f"# Chain {chain_idx} completion rule")
-            lines.extend(self._eventgroup_rule(chain, event_blocks))
+            lines.extend(self._eventgroup_rule(chain))
             lines.append("")
 
         return self._write(output_path, lines)
@@ -232,36 +218,31 @@ class SecExporter:
             f"action=write - CHAIN: %0 | EVENT: {event_type} | TARGET: {event.target} | MITRE: {technique}",
         ]
 
-    def _eventgroup_rule(
-        self,
-        chain: AttackChain,
-        event_blocks: list[tuple[str, str]],
-    ) -> list[str]:
-        """Build a SEC ``type=EventGroup`` rule that fires on chain completion.
+    def _eventgroup_rule(self, chain: AttackChain) -> list[str]:
+        """Build a SEC ``type=SingleWithThreshold`` rule for chain completion.
 
-        Uses the SEC 2.9.4 multi-pattern format: the first event block
-        opens with ``type=EventGroup``; each subsequent block is preceded
-        by a bare ``and`` line.  The ``window`` and ``action`` keywords
-        follow the last block.
+        The pattern matches the ``write`` output produced by each per-event
+        Single rule (``CHAIN: <name> | EVENT: ...``).  SEC fires this rule
+        once it has seen ``thresh`` matching lines within ``window`` seconds,
+        declaring the chain complete.
 
         Args:
             chain: The AttackChain whose completion is being detected.
-            event_blocks: Ordered list of ``(pattern, desc)`` tuples from
-                          the per-event Single rules.
 
         Returns:
-            List of strings forming the SEC EventGroup rule block.
+            List of strings forming the SEC SingleWithThreshold rule block.
         """
-        rule: list[str] = ["type=EventGroup"]
-        for i, (pattern, desc) in enumerate(event_blocks):
-            if i > 0:
-                rule.append("and")
-            rule.append("ptype=RegExp")
-            rule.append(f"pattern={pattern}")
-            rule.append(f"desc={desc}")
-        rule.append("window=600")
-        rule.append(f"action=write - REDSEC CHAIN COMPLETE: {chain.name}")
-        return rule
+        severity = chain.severity if isinstance(chain.severity, str) else chain.severity.value
+        chain_name = chain.name
+        return [
+            "type=SingleWithThreshold",
+            "ptype=RegExp",
+            f"pattern=CHAIN: {chain_name}",
+            f"desc=Chain {chain_name} detected",
+            f"action=write - REDSEC CHAIN COMPLETE: {chain_name} | severity={severity}",
+            "window=86400",
+            f"thresh={len(chain.events)}",
+        ]
 
     def _build_pattern(self, tool: str, event_type: str, target: str) -> str:
         """Build a RegExp pattern matching a SEC log line for this event.
