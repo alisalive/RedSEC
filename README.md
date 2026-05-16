@@ -23,7 +23,7 @@ SEC project: https://github.com/simple-evcorr/sec
   and tactic name
 - Detection risk heuristic — score (0.0 to 1.0) estimates SOC detection
   likelihood per event based on tool, event type, and port
-- SEC export — generates .conf files with type=Single and type=EventGroup rules
+- SEC export — generates .conf files with type=Single and type=SingleWithThreshold rules
   consumable directly by Vaarandi's SEC daemon
 - HTML report — dark-theme timeline with severity badges, MITRE technique tags,
   and detection risk bars; no external dependencies
@@ -33,7 +33,7 @@ SEC project: https://github.com/simple-evcorr/sec
 
 ## Installation
 
-    git clone https://github.com/alisalive/redsec
+    git clone https://github.com/alisalive/RedSEC
     cd redsec
     pip install -e .
 
@@ -80,7 +80,7 @@ Print version and SEC tool reference:
     CorrelationEngine           -- match YAML rules -> AttackChains
           |
           v
-    SecExporter                 -- write .conf (Single + EventGroup rules)
+    SecExporter                 -- write .conf (Single + SingleWithThreshold rules)
     HtmlExporter                -- write dark-theme HTML report
     JsonExporter                -- write raw JSON (optional)
 
