@@ -4,10 +4,29 @@
 
 **Red team log aggregation, correlation, and SEC export tool.**
 
-RedSEC collects output from offensive security tools, correlates events into
-attack chains, maps them to MITRE ATT&CK techniques, scores detection risk,
-and exports results to Risto Vaarandi's SEC (Simple Event Correlator) format
-alongside a dark-theme HTML report.
+---
+
+## Why RedSEC?
+
+During red team engagements, I kept running into the same problem:
+nmap outputs XML, nuclei outputs JSONL, ffuf outputs JSON — all
+scattered across different terminals and files. Writing the final
+pentest report meant manually piecing together what happened, when,
+and in what order.
+
+I wanted a tool that would automatically collect all of that output,
+correlate events into attack chains, and produce something useful —
+both for my own reporting and for the defender who needs to understand
+what they missed.
+
+The SEC integration came from reading Risto Vaarandi's 2002 IEEE paper
+on Simple Event Correlator. Vaarandi built SEC for defenders — to
+correlate log events and detect attack patterns. I thought: what if
+we feed offensive tool output into SEC? What if a red teamer's logs
+could directly tell a defender "here is what I did, and here is the
+SEC rule that would have caught me"?
+
+That question became RedSEC.
 
 SEC project: https://github.com/simple-evcorr/sec
 
