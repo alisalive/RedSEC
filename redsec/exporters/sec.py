@@ -219,7 +219,7 @@ class SecExporter:
             "ptype=RegExp",
             f"pattern={pattern}",
             f"desc={desc}",
-            f'action=pipe echo "{action_msg}"',
+            f"action=write - CHAIN: %0 | EVENT: {event_type} | TARGET: {event.target} | MITRE: {technique}",
         ]
 
     def _eventgroup_rule(
@@ -245,25 +245,18 @@ class SecExporter:
         techniques = ",".join(chain.mitre_techniques) if chain.mitre_techniques else "N/A"
         chain_safe = _safe_label(chain.name)
 
-        # EventGroup pattern matches the chain's own completion action output.
-        pattern = f"REDSEC_CHAIN_COMPLETE_{chain_safe}"
-
         # sub= lines list the desc of each member rule (SEC EventGroup syntax).
         sub_lines = [f"sub={desc}" for desc in event_descs]
-
-        action_msg = (
-            f"REDSEC CHAIN COMPLETE: {chain.name} "
-            f"| severity={severity} | techniques={techniques}"
-        )
 
         rule: list[str] = [
             "type=EventGroup",
             "ptype=RegExp",
-            f"pattern={pattern}",
+            "pattern=.*",
+            f"desc=Chain complete: {chain.name}",
+            "window=600",
         ]
         rule.extend(sub_lines)
-        rule.append(f"desc=Chain complete: {chain.name}")
-        rule.append(f'action=pipe echo "{action_msg}"')
+        rule.append(f"action=write - REDSEC CHAIN COMPLETE: {chain.name}")
         return rule
 
     def _build_pattern(self, tool: str, event_type: str, target: str) -> str:
