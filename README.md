@@ -100,7 +100,7 @@ Print version and SEC tool reference:
     CorrelationEngine           -- match YAML rules -> AttackChains
           |
           v
-    SecExporter                 -- write .conf (Single + SingleWithThreshold rules)
+    SecExporter                 -- write .conf (Single, SingleWithThreshold, PairWithWindow, Context, Synthetic rules)
     HtmlExporter                -- write dark-theme HTML report
     JsonExporter                -- write raw JSON (optional)
 
