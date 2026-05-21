@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from redsec.correlation.engine import CorrelationEngine, _PairRule
+from redsec.correlation.engine import CorrelationEngine, _ContextRule, _PairRule, _SyntheticRule
 from redsec.models.event import EventType, RedSecEvent, Severity, ToolName
 
 RULES_DIR = str(pathlib.Path(__file__).parent.parent / "redsec" / "correlation" / "rules")
@@ -322,6 +322,393 @@ class TestPairWithWindow:
                 severity: critical
                 on_match: "match"
                 on_timeout: "timeout"
+        """)
+        (tmp_path / "bad.yaml").write_text(bad_yaml, encoding="utf-8")
+        engine = CorrelationEngine(str(tmp_path))
+        assert len(engine._rules) == 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers for Context rule tests
+# ---------------------------------------------------------------------------
+
+CTX_YAML = textwrap.dedent("""\
+    rules:
+      - name: "Test Context Attack"
+        description: "Trigger and match on same target."
+        type: context
+        trigger: port_scan
+        context_field: target
+        match: vuln_found
+        window_seconds: 300
+        chain_name: "Test Context Attack"
+        severity: high
+        on_match: "FOCUSED: same target"
+        on_miss: "SCATTERED: different targets"
+""")
+
+
+@pytest.fixture()
+def ctx_rules_dir(tmp_path):
+    """Temporary rules directory containing only the CTX_YAML rule."""
+    (tmp_path / "ctx.yaml").write_text(CTX_YAML, encoding="utf-8")
+    return str(tmp_path)
+
+
+def make_ctx_event(
+    event_type: EventType,
+    offset_seconds: int = 0,
+    target: str = "10.0.0.1",
+) -> RedSecEvent:
+    """Return a minimal RedSecEvent with configurable type, offset, and target."""
+    base = datetime(2024, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
+    return RedSecEvent(
+        tool=ToolName.nmap,
+        event_type=event_type,
+        severity=Severity.info,
+        timestamp=base + timedelta(seconds=offset_seconds),
+        target=target,
+        description="ctx test event",
+    )
+
+
+class TestContextRule:
+    """Tests for type=context correlation rules."""
+
+    def test_context_rules_loaded_from_yaml(self, ctx_rules_dir):
+        """Context rules are parsed and stored as _ContextRule instances."""
+        engine = CorrelationEngine(ctx_rules_dir)
+        assert len(engine._rules) == 1
+        assert isinstance(engine._rules[0], _ContextRule)
+
+    def test_default_rules_include_context_rules(self):
+        """Default YAML contains the two context rules."""
+        engine = CorrelationEngine(RULES_DIR)
+        ctx_names = {r.name for r in engine._rules if isinstance(r, _ContextRule)}
+        assert "Same Target Attack" in ctx_names
+        assert "Same Target Credential Attack" in ctx_names
+
+    def test_context_same_target_produces_on_match_chain(self, ctx_rules_dir):
+        """Trigger and match on same target → on_match chain with 2 events."""
+        engine = CorrelationEngine(ctx_rules_dir)
+        events = [
+            make_ctx_event(EventType.port_scan, offset_seconds=0, target="10.0.0.1"),
+            make_ctx_event(EventType.vuln_found, offset_seconds=60, target="10.0.0.1"),
+        ]
+        chains = engine.correlate(events)
+        assert len(chains) == 1
+        chain = chains[0]
+        assert len(chain.events) == 2
+        assert chain.pair_on_match == "FOCUSED: same target"
+
+    def test_context_different_target_produces_on_miss_chain(self, ctx_rules_dir):
+        """Trigger and match on different targets → on_miss chain with 2 events."""
+        engine = CorrelationEngine(ctx_rules_dir)
+        events = [
+            make_ctx_event(EventType.port_scan, offset_seconds=0, target="10.0.0.1"),
+            make_ctx_event(EventType.vuln_found, offset_seconds=60, target="10.0.0.2"),
+        ]
+        chains = engine.correlate(events)
+        assert len(chains) == 1
+        chain = chains[0]
+        assert len(chain.events) == 2
+        assert chain.pair_on_timeout == "SCATTERED: different targets"
+
+    def test_context_no_match_event_produces_no_chain(self, ctx_rules_dir):
+        """Trigger with no following match event → no chain produced."""
+        engine = CorrelationEngine(ctx_rules_dir)
+        events = [make_ctx_event(EventType.port_scan, offset_seconds=0)]
+        chains = engine.correlate(events)
+        assert chains == []
+
+    def test_context_match_outside_window_produces_no_chain(self, ctx_rules_dir):
+        """Match event after window expires → no chain produced."""
+        engine = CorrelationEngine(ctx_rules_dir)
+        events = [
+            make_ctx_event(EventType.port_scan, offset_seconds=0, target="10.0.0.1"),
+            make_ctx_event(EventType.vuln_found, offset_seconds=400, target="10.0.0.1"),
+        ]
+        chains = engine.correlate(events)
+        assert chains == []
+
+    def test_context_pair_type_is_context(self, ctx_rules_dir):
+        """Chain produced by context rule has pair_type='context'."""
+        engine = CorrelationEngine(ctx_rules_dir)
+        events = [
+            make_ctx_event(EventType.port_scan, offset_seconds=0),
+            make_ctx_event(EventType.vuln_found, offset_seconds=10),
+        ]
+        chains = engine.correlate(events)
+        assert chains[0].pair_type == "context"
+
+    def test_context_chain_name_from_rule(self, ctx_rules_dir):
+        """Context chain uses the rule's chain_name."""
+        engine = CorrelationEngine(ctx_rules_dir)
+        events = [
+            make_ctx_event(EventType.port_scan, offset_seconds=0),
+            make_ctx_event(EventType.vuln_found, offset_seconds=10),
+        ]
+        chains = engine.correlate(events)
+        assert chains[0].name == "Test Context Attack"
+
+    def test_context_window_seconds_stored(self, ctx_rules_dir):
+        """pair_window_seconds is populated from the rule."""
+        engine = CorrelationEngine(ctx_rules_dir)
+        events = [
+            make_ctx_event(EventType.port_scan, offset_seconds=0),
+            make_ctx_event(EventType.vuln_found, offset_seconds=10),
+        ]
+        chains = engine.correlate(events)
+        assert chains[0].pair_window_seconds == 300
+
+    def test_context_second_type_stored(self, ctx_rules_dir):
+        """pair_second_type reflects the rule's match field."""
+        engine = CorrelationEngine(ctx_rules_dir)
+        events = [
+            make_ctx_event(EventType.port_scan, offset_seconds=0),
+            make_ctx_event(EventType.vuln_found, offset_seconds=10),
+        ]
+        chains = engine.correlate(events)
+        assert chains[0].pair_second_type == "vuln_found"
+
+    def test_context_multiple_triggers_each_produces_chain(self, ctx_rules_dir):
+        """Each trigger event independently seeks a match event."""
+        engine = CorrelationEngine(ctx_rules_dir)
+        events = [
+            make_ctx_event(EventType.port_scan, offset_seconds=0, target="10.0.0.1"),
+            make_ctx_event(EventType.port_scan, offset_seconds=50, target="10.0.0.2"),
+            make_ctx_event(EventType.vuln_found, offset_seconds=100, target="10.0.0.2"),
+        ]
+        chains = engine.correlate(events)
+        # First port_scan (10.0.0.1) → vuln at 10.0.0.2 (different) → on_miss chain
+        # Second port_scan (10.0.0.2) → vuln at 10.0.0.2 (same) → on_match chain
+        assert len(chains) == 2
+
+    def test_context_missing_field_raises(self, tmp_path):
+        """A context rule missing 'on_miss' is skipped with a warning."""
+        bad_yaml = textwrap.dedent("""\
+            rules:
+              - name: "Bad Context"
+                type: context
+                trigger: port_scan
+                context_field: target
+                match: vuln_found
+                window_seconds: 60
+                chain_name: "Bad Context"
+                severity: high
+                on_match: "match"
+        """)
+        (tmp_path / "bad.yaml").write_text(bad_yaml, encoding="utf-8")
+        engine = CorrelationEngine(str(tmp_path))
+        assert len(engine._rules) == 0
+
+    def test_context_invalid_context_field_raises(self, tmp_path):
+        """A context rule with an unsupported context_field is skipped."""
+        bad_yaml = textwrap.dedent("""\
+            rules:
+              - name: "Bad Context"
+                type: context
+                trigger: port_scan
+                context_field: nonexistent_field
+                match: vuln_found
+                window_seconds: 60
+                chain_name: "Bad Context"
+                severity: high
+                on_match: "match"
+                on_miss: "miss"
+        """)
+        (tmp_path / "bad.yaml").write_text(bad_yaml, encoding="utf-8")
+        engine = CorrelationEngine(str(tmp_path))
+        assert len(engine._rules) == 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers for Synthetic rule tests
+# ---------------------------------------------------------------------------
+
+SYNTH_YAML = textwrap.dedent("""\
+    rules:
+      - name: "Test Mass Scan"
+        description: "Three port scans in 60s triggers a synthetic event."
+        type: synthetic
+        trigger: port_scan
+        threshold: 3
+        window_seconds: 60
+        synthetic_event_type: vuln_found
+        synthetic_severity: high
+        chain_name: "Test Mass Scan"
+        severity: high
+        message: "SYNTHETIC: mass scan detected"
+""")
+
+
+@pytest.fixture()
+def synth_rules_dir(tmp_path):
+    """Temporary rules directory containing only the SYNTH_YAML rule."""
+    (tmp_path / "synth.yaml").write_text(SYNTH_YAML, encoding="utf-8")
+    return str(tmp_path)
+
+
+def make_synth_event(
+    event_type: EventType,
+    offset_seconds: int = 0,
+    target: str = "10.0.0.1",
+) -> RedSecEvent:
+    """Return a minimal RedSecEvent for synthetic rule tests."""
+    base = datetime(2024, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
+    return RedSecEvent(
+        tool=ToolName.nmap,
+        event_type=event_type,
+        severity=Severity.info,
+        timestamp=base + timedelta(seconds=offset_seconds),
+        target=target,
+        description="synth test event",
+    )
+
+
+class TestSyntheticRule:
+    """Tests for type=synthetic correlation rules."""
+
+    def test_synthetic_rules_loaded_from_yaml(self, synth_rules_dir):
+        """Synthetic rules are parsed and stored as _SyntheticRule instances."""
+        engine = CorrelationEngine(synth_rules_dir)
+        assert len(engine._rules) == 1
+        assert isinstance(engine._rules[0], _SyntheticRule)
+
+    def test_default_rules_include_synthetic_rules(self):
+        """Default YAML contains the two synthetic rules."""
+        engine = CorrelationEngine(RULES_DIR)
+        synth_names = {r.name for r in engine._rules if isinstance(r, _SyntheticRule)}
+        assert "Mass Port Scan Detected" in synth_names
+        assert "Brute Force Storm" in synth_names
+
+    def test_threshold_reached_creates_chain(self, synth_rules_dir):
+        """Exactly threshold events in window → one synthetic chain."""
+        engine = CorrelationEngine(synth_rules_dir)
+        events = [
+            make_synth_event(EventType.port_scan, offset_seconds=0),
+            make_synth_event(EventType.port_scan, offset_seconds=10),
+            make_synth_event(EventType.port_scan, offset_seconds=20),
+        ]
+        chains = engine.correlate(events)
+        assert len(chains) == 1
+
+    def test_below_threshold_produces_no_chain(self, synth_rules_dir):
+        """Fewer than threshold events → no chain."""
+        engine = CorrelationEngine(synth_rules_dir)
+        events = [
+            make_synth_event(EventType.port_scan, offset_seconds=0),
+            make_synth_event(EventType.port_scan, offset_seconds=10),
+        ]
+        chains = engine.correlate(events)
+        assert chains == []
+
+    def test_synthetic_chain_contains_trigger_plus_synthetic_event(self, synth_rules_dir):
+        """Chain has threshold trigger events + 1 synthetic event."""
+        engine = CorrelationEngine(synth_rules_dir)
+        events = [
+            make_synth_event(EventType.port_scan, offset_seconds=0),
+            make_synth_event(EventType.port_scan, offset_seconds=10),
+            make_synth_event(EventType.port_scan, offset_seconds=20),
+        ]
+        chains = engine.correlate(events)
+        assert len(chains[0].events) == 4  # 3 triggers + 1 synthetic
+
+    def test_synthetic_event_tool_is_redsec(self, synth_rules_dir):
+        """The generated synthetic event has tool='redsec'."""
+        engine = CorrelationEngine(synth_rules_dir)
+        events = [
+            make_synth_event(EventType.port_scan, offset_seconds=i * 10)
+            for i in range(3)
+        ]
+        chains = engine.correlate(events)
+        synthetic_event = chains[0].events[-1]
+        assert synthetic_event.tool == ToolName.redsec.value
+
+    def test_synthetic_event_type_matches_rule(self, synth_rules_dir):
+        """The generated event has the event_type from the rule."""
+        engine = CorrelationEngine(synth_rules_dir)
+        events = [make_synth_event(EventType.port_scan, offset_seconds=i * 5) for i in range(3)]
+        chains = engine.correlate(events)
+        synthetic_event = chains[0].events[-1]
+        assert synthetic_event.event_type == EventType.vuln_found.value
+
+    def test_synthetic_event_description_matches_message(self, synth_rules_dir):
+        """The synthetic event description equals the rule's message field."""
+        engine = CorrelationEngine(synth_rules_dir)
+        events = [make_synth_event(EventType.port_scan, offset_seconds=i * 5) for i in range(3)]
+        chains = engine.correlate(events)
+        assert chains[0].events[-1].description == "SYNTHETIC: mass scan detected"
+
+    def test_synthetic_chain_is_synthetic_flag(self, synth_rules_dir):
+        """Synthetic chain has is_synthetic=True."""
+        engine = CorrelationEngine(synth_rules_dir)
+        events = [make_synth_event(EventType.port_scan, offset_seconds=i * 5) for i in range(3)]
+        chains = engine.correlate(events)
+        assert chains[0].is_synthetic is True
+
+    def test_synthetic_chain_name_from_rule(self, synth_rules_dir):
+        """Chain uses the rule's chain_name."""
+        engine = CorrelationEngine(synth_rules_dir)
+        events = [make_synth_event(EventType.port_scan, offset_seconds=i * 5) for i in range(3)]
+        chains = engine.correlate(events)
+        assert chains[0].name == "Test Mass Scan"
+
+    def test_synthetic_target_most_common(self, synth_rules_dir):
+        """Synthetic event target is set to the most common trigger target."""
+        engine = CorrelationEngine(synth_rules_dir)
+        events = [
+            make_synth_event(EventType.port_scan, offset_seconds=0, target="10.0.0.5"),
+            make_synth_event(EventType.port_scan, offset_seconds=5, target="10.0.0.5"),
+            make_synth_event(EventType.port_scan, offset_seconds=10, target="10.0.0.9"),
+        ]
+        chains = engine.correlate(events)
+        assert chains[0].events[-1].target == "10.0.0.5"
+
+    def test_events_outside_window_not_grouped(self, synth_rules_dir):
+        """Events beyond window_seconds are not grouped into the same chain."""
+        engine = CorrelationEngine(synth_rules_dir)
+        events = [
+            make_synth_event(EventType.port_scan, offset_seconds=0),
+            make_synth_event(EventType.port_scan, offset_seconds=10),
+            make_synth_event(EventType.port_scan, offset_seconds=120),  # outside 60s window
+        ]
+        chains = engine.correlate(events)
+        # First two events don't meet threshold; third is in its own window (still only 1 event)
+        assert chains == []
+
+    def test_synthetic_rule_missing_field_skipped(self, tmp_path):
+        """A synthetic rule missing 'message' is skipped."""
+        bad_yaml = textwrap.dedent("""\
+            rules:
+              - name: "Bad Synth"
+                type: synthetic
+                trigger: port_scan
+                threshold: 3
+                window_seconds: 60
+                synthetic_event_type: vuln_found
+                synthetic_severity: high
+                chain_name: "Bad Synth"
+                severity: high
+        """)
+        (tmp_path / "bad.yaml").write_text(bad_yaml, encoding="utf-8")
+        engine = CorrelationEngine(str(tmp_path))
+        assert len(engine._rules) == 0
+
+    def test_synthetic_rule_threshold_below_two_skipped(self, tmp_path):
+        """A synthetic rule with threshold < 2 is skipped."""
+        bad_yaml = textwrap.dedent("""\
+            rules:
+              - name: "Bad Threshold"
+                type: synthetic
+                trigger: port_scan
+                threshold: 1
+                window_seconds: 60
+                synthetic_event_type: vuln_found
+                synthetic_severity: high
+                chain_name: "Bad Threshold"
+                severity: high
+                message: "too low"
         """)
         (tmp_path / "bad.yaml").write_text(bad_yaml, encoding="utf-8")
         engine = CorrelationEngine(str(tmp_path))

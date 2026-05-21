@@ -5,6 +5,7 @@ into AttackChain objects based on event_type ordering and time windows.
 """
 
 import os
+from collections import Counter
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Optional, Union
@@ -13,7 +14,7 @@ import yaml
 
 from redsec.mitre.mapper import MitreMapper
 from redsec.models.chain import AttackChain
-from redsec.models.event import EventType, RedSecEvent, Severity
+from redsec.models.event import EventType, RedSecEvent, Severity, ToolName
 
 
 # Severity string → enum, used when converting rule YAML values.
@@ -59,6 +60,58 @@ class _PairRule:
     on_timeout: str     # Message when second event does not arrive in time
 
 
+# Valid context fields that can be compared between trigger and match events.
+_VALID_CONTEXT_FIELDS = frozenset({"target", "tool", "port"})
+
+
+@dataclass
+class _ContextRule:
+    """Internal representation of a parsed Context correlation rule.
+
+    A Context rule watches for a *trigger* event, captures the value of
+    ``context_field`` from it, then looks for a *match* event within
+    ``window_seconds``.  If the match event's ``context_field`` equals the
+    trigger's, the ``on_match`` message is used; if the values differ the
+    ``on_miss`` message is used instead.  If no match event arrives within
+    the window no chain is produced.
+    """
+
+    name: str
+    description: str
+    trigger: str        # event_type that triggers context creation
+    context_field: str  # which field to compare: "target", "tool", or "port"
+    match: str          # event_type that uses the context
+    window_seconds: int
+    chain_name: str
+    severity: Severity
+    on_match: str       # message when match event shares the context value
+    on_miss: str        # message when match event has a different context value
+
+
+@dataclass
+class _SyntheticRule:
+    """Internal representation of a parsed Synthetic correlation rule.
+
+    A Synthetic rule counts occurrences of a *trigger* event type within a
+    sliding ``window_seconds`` window.  Once the count reaches ``threshold``
+    the engine fabricates a new ``RedSecEvent`` (with ``tool=ToolName.redsec``
+    and ``event_type=synthetic_event_type``) and groups all contributing
+    trigger events plus the synthetic one into an ``AttackChain`` marked
+    ``is_synthetic=True``.
+    """
+
+    name: str
+    description: str
+    trigger: str                # event_type to count
+    threshold: int              # minimum occurrences to fire
+    window_seconds: int
+    synthetic_event_type: str   # event_type assigned to the generated event
+    synthetic_severity: Severity
+    chain_name: str
+    severity: Severity
+    message: str                # description text for the synthetic event
+
+
 class CorrelationEngine:
     """Correlate RedSecEvent sequences into AttackChain objects using YAML rules.
 
@@ -89,7 +142,7 @@ class CorrelationEngine:
         Raises:
             FileNotFoundError: If ``rules_dir`` does not exist.
         """
-        self._rules: list[Union[_Rule, _PairRule]] = []
+        self._rules: list[Union[_Rule, _PairRule, _ContextRule, _SyntheticRule]] = []
         self._mapper = MitreMapper()
         self.load_rules(rules_dir)
 
@@ -114,7 +167,7 @@ class CorrelationEngine:
         if not os.path.isdir(rules_dir):
             raise FileNotFoundError(f"Rules directory not found: {rules_dir}")
 
-        self._rules: list[Union[_Rule, _PairRule]] = []
+        self._rules: list[Union[_Rule, _PairRule, _ContextRule, _SyntheticRule]] = []
         for fname in sorted(os.listdir(rules_dir)):
             if not fname.endswith(".yaml") and not fname.endswith(".yml"):
                 continue
@@ -147,6 +200,10 @@ class CorrelationEngine:
         for rule in self._rules:
             if isinstance(rule, _PairRule):
                 matched = self._match_pair_rule(rule, sorted_events)
+            elif isinstance(rule, _ContextRule):
+                matched = self._match_context_rule(rule, sorted_events)
+            elif isinstance(rule, _SyntheticRule):
+                matched = self._match_synthetic_rule(rule, sorted_events)
             else:
                 matched = self._match_rule(rule, sorted_events)
             chains.extend(matched)
@@ -174,29 +231,39 @@ class CorrelationEngine:
             raise ValueError(f"Missing top-level 'rules' key in {file_path}")
 
         for entry in data["rules"]:
-            rule: Union[_Rule, _PairRule] = self._parse_rule_entry(entry, file_path)
+            rule: Union[_Rule, _PairRule, _ContextRule, _SyntheticRule] = self._parse_rule_entry(entry, file_path)
             self._rules.append(rule)
 
-    def _parse_rule_entry(self, entry: dict, source: str) -> Union[_Rule, _PairRule]:
+    def _parse_rule_entry(
+        self, entry: dict, source: str
+    ) -> Union[_Rule, _PairRule, _ContextRule, _SyntheticRule]:
         """Validate and convert a raw YAML rule dict into a typed rule dataclass.
 
-        Dispatches to ``_parse_sequence_rule`` for standard ``type=sequence``
-        rules (the default) and to ``_parse_pair_rule`` for
-        ``type=pair_with_window`` rules.
+        Dispatches based on the ``type`` field (defaulting to ``"sequence"``):
+
+        * ``"sequence"``        → :class:`_Rule`
+        * ``"pair_with_window"`` → :class:`_PairRule`
+        * ``"context"``         → :class:`_ContextRule`
+        * ``"synthetic"``       → :class:`_SyntheticRule`
 
         Args:
             entry: Dict loaded from a single YAML rule entry.
             source: File path used in error messages only.
 
         Returns:
-            A validated ``_Rule`` or ``_PairRule`` instance.
+            A validated rule dataclass instance.
 
         Raises:
-            ValueError: If required fields are missing or values are invalid.
+            ValueError: If required fields are missing, values are invalid, or
+                the ``type`` field is unrecognised.
         """
         rule_type = entry.get("type", "sequence")
         if rule_type == "pair_with_window":
             return self._parse_pair_rule(entry, source)
+        if rule_type == "context":
+            return self._parse_context_rule(entry, source)
+        if rule_type == "synthetic":
+            return self._parse_synthetic_rule(entry, source)
         return self._parse_sequence_rule(entry, source)
 
     def _parse_sequence_rule(self, entry: dict, source: str) -> _Rule:
@@ -296,6 +363,135 @@ class CorrelationEngine:
             severity=severity,
             on_match=entry["on_match"],
             on_timeout=entry["on_timeout"],
+        )
+
+    def _parse_context_rule(self, entry: dict, source: str) -> _ContextRule:
+        """Validate and convert a raw YAML entry into a ``_ContextRule`` dataclass.
+
+        Args:
+            entry: Dict loaded from a single YAML context rule entry.
+            source: File path used in error messages only.
+
+        Returns:
+            A validated ``_ContextRule`` instance.
+
+        Raises:
+            ValueError: If required fields are missing, event types are unknown,
+                or ``context_field`` is not one of ``"target"``, ``"tool"``,
+                ``"port"``.
+        """
+        required = (
+            "name", "trigger", "context_field", "match", "window_seconds",
+            "chain_name", "severity", "on_match", "on_miss",
+        )
+        for field in required:
+            if field not in entry:
+                raise ValueError(
+                    f"Context rule in {source} is missing required field '{field}': {entry}"
+                )
+
+        context_field = entry["context_field"]
+        if context_field not in _VALID_CONTEXT_FIELDS:
+            raise ValueError(
+                f"Rule '{entry['name']}' in {source}: invalid context_field '{context_field}'. "
+                f"Valid values: {sorted(_VALID_CONTEXT_FIELDS)}"
+            )
+
+        valid_types = {e.value for e in EventType}
+        for key in ("trigger", "match"):
+            val = entry[key]
+            if val not in valid_types:
+                raise ValueError(
+                    f"Rule '{entry['name']}' in {source}: unknown event_type '{val}' "
+                    f"for field '{key}'. Valid values: {sorted(valid_types)}"
+                )
+
+        severity_str = str(entry["severity"]).lower()
+        severity = _SEVERITY_MAP.get(severity_str)
+        if severity is None:
+            raise ValueError(
+                f"Rule '{entry['name']}' in {source}: unknown severity '{severity_str}'."
+            )
+
+        return _ContextRule(
+            name=entry["name"],
+            description=entry.get("description", ""),
+            trigger=entry["trigger"],
+            context_field=context_field,
+            match=entry["match"],
+            window_seconds=int(entry["window_seconds"]),
+            chain_name=entry["chain_name"],
+            severity=severity,
+            on_match=entry["on_match"],
+            on_miss=entry["on_miss"],
+        )
+
+    def _parse_synthetic_rule(self, entry: dict, source: str) -> _SyntheticRule:
+        """Validate and convert a raw YAML entry into a ``_SyntheticRule`` dataclass.
+
+        Args:
+            entry: Dict loaded from a single YAML synthetic rule entry.
+            source: File path used in error messages only.
+
+        Returns:
+            A validated ``_SyntheticRule`` instance.
+
+        Raises:
+            ValueError: If required fields are missing, event types are unknown,
+                or ``threshold`` is less than 2.
+        """
+        required = (
+            "name", "trigger", "threshold", "window_seconds",
+            "synthetic_event_type", "synthetic_severity", "chain_name",
+            "severity", "message",
+        )
+        for field in required:
+            if field not in entry:
+                raise ValueError(
+                    f"Synthetic rule in {source} is missing required field '{field}': {entry}"
+                )
+
+        threshold = int(entry["threshold"])
+        if threshold < 2:
+            raise ValueError(
+                f"Rule '{entry['name']}' in {source}: threshold must be >= 2, got {threshold}."
+            )
+
+        valid_types = {e.value for e in EventType}
+        for key in ("trigger", "synthetic_event_type"):
+            val = entry[key]
+            if val not in valid_types:
+                raise ValueError(
+                    f"Rule '{entry['name']}' in {source}: unknown event_type '{val}' "
+                    f"for field '{key}'. Valid values: {sorted(valid_types)}"
+                )
+
+        severity_str = str(entry["severity"]).lower()
+        severity = _SEVERITY_MAP.get(severity_str)
+        if severity is None:
+            raise ValueError(
+                f"Rule '{entry['name']}' in {source}: unknown severity '{severity_str}'."
+            )
+
+        synthetic_sev_str = str(entry["synthetic_severity"]).lower()
+        synthetic_severity = _SEVERITY_MAP.get(synthetic_sev_str)
+        if synthetic_severity is None:
+            raise ValueError(
+                f"Rule '{entry['name']}' in {source}: unknown synthetic_severity "
+                f"'{synthetic_sev_str}'."
+            )
+
+        return _SyntheticRule(
+            name=entry["name"],
+            description=entry.get("description", ""),
+            trigger=entry["trigger"],
+            threshold=threshold,
+            window_seconds=int(entry["window_seconds"]),
+            synthetic_event_type=entry["synthetic_event_type"],
+            synthetic_severity=synthetic_severity,
+            chain_name=entry["chain_name"],
+            severity=severity,
+            message=entry["message"],
         )
 
     def _match_rule(self, rule: _Rule, sorted_events: list[RedSecEvent]) -> list[AttackChain]:
@@ -441,6 +637,215 @@ class CorrelationEngine:
         chain.add_event(first_event)
         if second_event is not None:
             chain.add_event(second_event)
+
+        self._mapper.enrich_chain(chain)
+        return chain
+
+    def _match_context_rule(
+        self, rule: _ContextRule, sorted_events: list[RedSecEvent]
+    ) -> list[AttackChain]:
+        """Find all Context matches for a single context rule.
+
+        For every *trigger* event the value of ``rule.context_field`` is
+        captured.  The engine then searches for the next *match* event within
+        ``window_seconds``.  If one is found, the context field values are
+        compared:
+
+        * Same value  → ``on_match`` chain containing both events.
+        * Different value → ``on_miss`` chain containing both events.
+        * No match event found within the window → **no chain** is produced.
+
+        Args:
+            rule: The ``_ContextRule`` to evaluate.
+            sorted_events: Events sorted ascending by timestamp.
+
+        Returns:
+            List of ``AttackChain`` instances (may be empty).
+        """
+        chains: list[AttackChain] = []
+        window = timedelta(seconds=rule.window_seconds)
+        n = len(sorted_events)
+        anchor_idx = 0
+
+        while anchor_idx < n:
+            while anchor_idx < n and sorted_events[anchor_idx].event_type != rule.trigger:
+                anchor_idx += 1
+            if anchor_idx >= n:
+                break
+
+            trigger_event = sorted_events[anchor_idx]
+            deadline = trigger_event.timestamp + window
+            trigger_ctx = self._get_context_value(trigger_event, rule.context_field)
+
+            match_event: Optional[RedSecEvent] = None
+            for i in range(anchor_idx + 1, n):
+                candidate = sorted_events[i]
+                if candidate.timestamp > deadline:
+                    break
+                if candidate.event_type == rule.match:
+                    match_event = candidate
+                    break
+
+            if match_event is not None:
+                match_ctx = self._get_context_value(match_event, rule.context_field)
+                same_context = trigger_ctx == match_ctx
+                chain = self._build_context_chain(rule, trigger_event, match_event, same_context)
+                chains.append(chain)
+
+            anchor_idx += 1
+
+        return chains
+
+    @staticmethod
+    def _get_context_value(event: RedSecEvent, context_field: str) -> Optional[str]:
+        """Extract and normalise the value of ``context_field`` from an event.
+
+        Args:
+            event: The source event.
+            context_field: One of ``"target"``, ``"tool"``, or ``"port"``.
+
+        Returns:
+            String representation of the field value, or ``None`` if the field
+            is not set on the event (e.g. ``port`` is optional).
+        """
+        if context_field == "target":
+            return event.target
+        if context_field == "tool":
+            return event.tool if isinstance(event.tool, str) else event.tool.value
+        if context_field == "port":
+            return str(event.port) if event.port is not None else None
+        return None
+
+    def _build_context_chain(
+        self,
+        rule: _ContextRule,
+        trigger_event: RedSecEvent,
+        match_event: RedSecEvent,
+        same_context: bool,
+    ) -> AttackChain:
+        """Construct an AttackChain from a Context rule evaluation result.
+
+        Sets ``pair_type="context"``, ``pair_on_match``, ``pair_on_timeout``
+        (which stores ``on_miss``), ``pair_window_seconds``, and
+        ``pair_second_type`` on the returned chain so that exporters can
+        generate the correct SEC PairWithWindow output.
+
+        Args:
+            rule: The ``_ContextRule`` that produced this result.
+            trigger_event: The event that anchored the context window.
+            match_event: The event that arrived within the window.
+            same_context: ``True`` when both events share the same
+                ``context_field`` value; ``False`` otherwise.
+
+        Returns:
+            An ``AttackChain`` enriched with MITRE ATT&CK data.
+        """
+        chain = AttackChain(
+            name=rule.chain_name,
+            start_time=trigger_event.timestamp,
+            end_time=match_event.timestamp,
+            severity=rule.severity,
+            pair_type="context",
+            pair_on_match=rule.on_match,
+            pair_on_timeout=rule.on_miss,   # on_miss reuses the pair_on_timeout slot
+            pair_window_seconds=rule.window_seconds,
+            pair_second_type=rule.match,
+        )
+        chain.add_event(trigger_event)
+        chain.add_event(match_event)
+        self._mapper.enrich_chain(chain)
+        return chain
+
+    def _match_synthetic_rule(
+        self, rule: _SyntheticRule, sorted_events: list[RedSecEvent]
+    ) -> list[AttackChain]:
+        """Find all Synthetic matches for a single synthetic rule.
+
+        Trigger events are collected into non-overlapping greedy windows of
+        ``window_seconds``.  Whenever a window accumulates at least
+        ``threshold`` trigger events a synthetic :class:`RedSecEvent` is
+        created and all events in that window plus the synthetic one are
+        grouped into an ``AttackChain`` with ``is_synthetic=True``.  The
+        anchor then advances past all events consumed by the window so that
+        each trigger event participates in at most one synthetic chain.
+
+        Args:
+            rule: The ``_SyntheticRule`` to evaluate.
+            sorted_events: Events sorted ascending by timestamp.
+
+        Returns:
+            List of ``AttackChain`` instances, one per threshold crossing.
+            Empty if the trigger event count never reaches ``threshold``.
+        """
+        chains: list[AttackChain] = []
+        window = timedelta(seconds=rule.window_seconds)
+
+        trigger_events = [e for e in sorted_events if e.event_type == rule.trigger]
+        n = len(trigger_events)
+        anchor_idx = 0
+
+        while anchor_idx < n:
+            anchor = trigger_events[anchor_idx]
+            deadline = anchor.timestamp + window
+
+            window_events: list[RedSecEvent] = [anchor]
+            for i in range(anchor_idx + 1, n):
+                if trigger_events[i].timestamp > deadline:
+                    break
+                window_events.append(trigger_events[i])
+
+            if len(window_events) >= rule.threshold:
+                chain = self._build_synthetic_chain(rule, window_events)
+                chains.append(chain)
+                anchor_idx += len(window_events)
+            else:
+                anchor_idx += 1
+
+        return chains
+
+    def _build_synthetic_chain(
+        self,
+        rule: _SyntheticRule,
+        trigger_events: list[RedSecEvent],
+    ) -> AttackChain:
+        """Construct an AttackChain from a Synthetic rule threshold crossing.
+
+        Generates a new ``RedSecEvent`` with ``tool=ToolName.redsec`` and
+        ``event_type=rule.synthetic_event_type``, then builds a chain that
+        contains all trigger events followed by the synthetic event.  The
+        synthetic event's target is set to the most frequently observed target
+        among the trigger events.
+
+        Args:
+            rule: The ``_SyntheticRule`` that produced this result.
+            trigger_events: All trigger events that fell within the window.
+
+        Returns:
+            An ``AttackChain`` with ``is_synthetic=True``, enriched with
+            MITRE ATT&CK data.
+        """
+        target_counts: Counter[str] = Counter(e.target for e in trigger_events)
+        most_common_target = target_counts.most_common(1)[0][0]
+
+        synthetic_event = RedSecEvent(
+            tool=ToolName.redsec,
+            event_type=EventType(rule.synthetic_event_type),
+            severity=rule.synthetic_severity,
+            timestamp=trigger_events[-1].timestamp,
+            target=most_common_target,
+            description=rule.message,
+        )
+
+        chain = AttackChain(
+            name=rule.chain_name,
+            start_time=trigger_events[0].timestamp,
+            end_time=synthetic_event.timestamp,
+            severity=rule.severity,
+            is_synthetic=True,
+        )
+        for event in trigger_events:
+            chain.add_event(event)
+        chain.add_event(synthetic_event)
 
         self._mapper.enrich_chain(chain)
         return chain

@@ -83,6 +83,10 @@ class AttackChain(BaseModel):
         default=None,
         description="Event type string for the second event in a PairWithWindow rule; used when generating SEC patterns for timeout chains.",
     )
+    is_synthetic: bool = Field(
+        default=False,
+        description="True when this chain was produced by a Synthetic rule and includes an engine-generated RedSecEvent.",
+    )
 
     def add_event(self, event: RedSecEvent) -> None:
         """Add an event to the chain and update derived fields.

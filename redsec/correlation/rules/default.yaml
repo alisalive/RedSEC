@@ -104,3 +104,51 @@ rules:
     severity: critical
     on_match: "LATERAL MOVEMENT CONFIRMED: exploitation led to pivot"
     on_timeout: "EXPLOITATION ONLY: no lateral movement detected"
+
+  - name: "Same Target Attack"
+    description: "Port scan and vulnerability found on same target — confirms focused attack."
+    type: context
+    trigger: port_scan
+    context_field: target
+    match: vuln_found
+    window_seconds: 86400
+    chain_name: "Same Target Attack"
+    severity: high
+    on_match: "FOCUSED ATTACK: port_scan and vuln_found on same target"
+    on_miss: "SCATTERED RECON: port_scan and vuln_found on different targets"
+
+  - name: "Same Target Credential Attack"
+    description: "Login failed and login success on same target — confirms targeted brute force."
+    type: context
+    trigger: login_failed
+    context_field: target
+    match: login_success
+    window_seconds: 3600
+    chain_name: "Same Target Credential Attack"
+    severity: critical
+    on_match: "TARGETED BRUTE FORCE: credential attack on same host confirmed"
+    on_miss: "SCATTERED AUTH: failed and successful login on different hosts"
+
+  - name: "Mass Port Scan Detected"
+    description: "Multiple port scans detected — possible automated scanner or worm."
+    type: synthetic
+    trigger: port_scan
+    threshold: 3
+    window_seconds: 300
+    synthetic_event_type: vuln_found
+    synthetic_severity: high
+    chain_name: "Mass Scan Detected"
+    severity: high
+    message: "SYNTHETIC: Mass port scan detected — 3+ scans in 300 seconds"
+
+  - name: "Brute Force Storm"
+    description: "Multiple failed logins — automated brute force attack in progress."
+    type: synthetic
+    trigger: login_failed
+    threshold: 5
+    window_seconds: 120
+    synthetic_event_type: vuln_found
+    synthetic_severity: critical
+    chain_name: "Brute Force Storm"
+    severity: critical
+    message: "SYNTHETIC: Brute force storm — 5+ failed logins in 120 seconds"

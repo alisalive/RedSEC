@@ -163,6 +163,26 @@ class SecExporter:
             lines.append("# PairWithWindow rule — SEC fires action on match, action2 on timeout")
             lines.extend(self._pair_rule(chain, first_event, second_event, rule_data))
             lines.append("")
+        elif chain.pair_type == "context":
+            trigger_event = chain.events[0]
+            match_event = chain.events[1] if len(chain.events) > 1 else None
+            rule_data = _PairRuleData(
+                on_match=chain.pair_on_match or "",
+                on_timeout=chain.pair_on_timeout or "",
+                window_seconds=chain.pair_window_seconds or 0,
+            )
+            lines.append("# Context rule — SEC fires action on same-context match, action2 on miss")
+            lines.extend(self._context_rule(chain, trigger_event, match_event, rule_data))
+            lines.append("")
+        elif chain.is_synthetic:
+            lines.append("# SYNTHETIC EVENT CHAIN")
+            for idx, event in enumerate(chain.events, start=1):
+                lines.append(f"# Step {idx}: {event.event_type} on {event.target}")
+                lines.extend(self._single_rule(event, chain_name=chain.name))
+                lines.append("")
+            lines.append("# Synthetic chain completion — SingleWithThreshold fires at threshold")
+            lines.extend(self._eventgroup_rule(chain))
+            lines.append("")
         else:
             for idx, event in enumerate(chain.events, start=1):
                 lines.append(f"# Step {idx}: {event.event_type} on {event.target}")
@@ -224,6 +244,26 @@ class SecExporter:
                 )
                 lines.append(f"# Chain {chain_idx} PairWithWindow rule")
                 lines.extend(self._pair_rule(chain, first_event, second_event, rule_data))
+                lines.append("")
+            elif chain.pair_type == "context":
+                trigger_event = chain.events[0]
+                match_event = chain.events[1] if len(chain.events) > 1 else None
+                rule_data = _PairRuleData(
+                    on_match=chain.pair_on_match or "",
+                    on_timeout=chain.pair_on_timeout or "",
+                    window_seconds=chain.pair_window_seconds or 0,
+                )
+                lines.append(f"# Chain {chain_idx} Context rule")
+                lines.extend(self._context_rule(chain, trigger_event, match_event, rule_data))
+                lines.append("")
+            elif chain.is_synthetic:
+                lines.append(f"# Chain {chain_idx} — SYNTHETIC EVENT CHAIN")
+                for step_idx, event in enumerate(chain.events, start=1):
+                    lines.append(f"# Chain {chain_idx} / Step {step_idx}: {event.event_type} on {event.target}")
+                    lines.extend(self._single_rule(event, chain_name=chain.name))
+                    lines.append("")
+                lines.append(f"# Chain {chain_idx} synthetic completion rule")
+                lines.extend(self._eventgroup_rule(chain))
                 lines.append("")
             else:
                 for step_idx, event in enumerate(chain.events, start=1):
@@ -350,6 +390,87 @@ class SecExporter:
             "ptype2=RegExp",
             f"pattern2={second_pattern}",
             f"desc2={second_desc}",
+            f"window={rule.window_seconds}",
+            f"action=write - {rule.on_match}",
+            f"action2=write - {rule.on_timeout}",
+        ]
+
+    def _context_rule(
+        self,
+        chain: AttackChain,
+        trigger_event: RedSecEvent,
+        match_event: Optional[RedSecEvent],
+        rule: _PairRuleData,
+    ) -> list[str]:
+        """Build a SEC ``type=PairWithWindow`` rule block for a context chain.
+
+        Context rules compare a specific field (e.g. ``target``) between a
+        trigger event and a match event.  In SEC's PairWithWindow format this
+        is approximated by building ``pattern2`` using the *trigger* event's
+        field value, so that only a match event with the same value will
+        satisfy the pattern.  If the match event has a different value SEC
+        fires ``action2`` (the on-miss path).
+
+        When ``match_event`` is ``None`` (no match event recorded), ``pattern2``
+        is derived from the chain's ``pair_second_type`` and the trigger's
+        target, keeping the exported rule functional.
+
+        Args:
+            chain: The ``AttackChain`` being exported; provides context metadata.
+            trigger_event: The event that anchored the context window.
+            match_event: The confirming event, or ``None`` if unavailable.
+            rule: ``_PairRuleData`` carrying ``on_match``, ``on_timeout``
+                (which holds the on-miss message), and ``window_seconds``.
+
+        Returns:
+            List of strings forming the SEC PairWithWindow rule block.
+        """
+        trigger_type = (
+            trigger_event.event_type
+            if isinstance(trigger_event.event_type, str)
+            else trigger_event.event_type.value
+        )
+        trigger_tool = (
+            trigger_event.tool if isinstance(trigger_event.tool, str) else trigger_event.tool.value
+        )
+        trigger_pattern = self._build_pattern(
+            trigger_tool, trigger_type, trigger_event.target,
+            trigger_event.port, trigger_event.description,
+        )
+        trigger_desc = f"redsec_CTX_{_safe_label(trigger_type)}_trigger_desc"
+
+        if match_event is not None:
+            match_type = (
+                match_event.event_type
+                if isinstance(match_event.event_type, str)
+                else match_event.event_type.value
+            )
+            match_tool = (
+                match_event.tool
+                if isinstance(match_event.tool, str)
+                else match_event.tool.value
+            )
+            # Use trigger's target in pattern2 to enforce same-context matching in SEC.
+            match_pattern = self._build_pattern(
+                match_tool, match_type, trigger_event.target,
+                match_event.port, match_event.description,
+            )
+        else:
+            match_type = chain.pair_second_type or "unknown"
+            match_pattern = (
+                r"\S+ \S+ " + re.escape(match_type) + r" " + re.escape(trigger_event.target)
+            )
+
+        match_desc = f"redsec_CTX_{_safe_label(match_type)}_match_desc"
+
+        return [
+            "type=PairWithWindow",
+            "ptype=RegExp",
+            f"pattern={trigger_pattern}",
+            f"desc={trigger_desc}",
+            "ptype2=RegExp",
+            f"pattern2={match_pattern}",
+            f"desc2={match_desc}",
             f"window={rule.window_seconds}",
             f"action=write - {rule.on_match}",
             f"action2=write - {rule.on_timeout}",
