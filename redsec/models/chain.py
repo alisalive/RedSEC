@@ -6,6 +6,7 @@ represent a logical attack path, enabling timeline analysis and MITRE mapping.
 
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +62,26 @@ class AttackChain(BaseModel):
     severity: Severity = Field(
         default=Severity.info,
         description="Highest severity level among all events in this chain.",
+    )
+    pair_type: Optional[str] = Field(
+        default=None,
+        description="Set to 'pair_with_window' for chains produced by PairWithWindow rules; None for sequence chains.",
+    )
+    pair_on_match: Optional[str] = Field(
+        default=None,
+        description="Message emitted when both events of a PairWithWindow rule are matched.",
+    )
+    pair_on_timeout: Optional[str] = Field(
+        default=None,
+        description="Message emitted when the first event matches but the second does not arrive in time.",
+    )
+    pair_window_seconds: Optional[int] = Field(
+        default=None,
+        description="Time window in seconds for PairWithWindow rules.",
+    )
+    pair_second_type: Optional[str] = Field(
+        default=None,
+        description="Event type string for the second event in a PairWithWindow rule; used when generating SEC patterns for timeout chains.",
     )
 
     def add_event(self, event: RedSecEvent) -> None:

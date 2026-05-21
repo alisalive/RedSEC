@@ -7,7 +7,7 @@ into AttackChain objects based on event_type ordering and time windows.
 import os
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, Optional, Union
 
 import yaml
 
@@ -28,7 +28,7 @@ _SEVERITY_MAP: dict[str, Severity] = {
 
 @dataclass
 class _Rule:
-    """Internal representation of a parsed correlation rule."""
+    """Internal representation of a parsed sequence correlation rule."""
 
     name: str
     description: str
@@ -36,6 +36,27 @@ class _Rule:
     window_seconds: int
     chain_name: str
     severity: Severity
+
+
+@dataclass
+class _PairRule:
+    """Internal representation of a parsed PairWithWindow correlation rule.
+
+    A PairWithWindow rule monitors for a *first* event type followed by a
+    *second* event type within ``window_seconds``.  If the second event
+    arrives in time the ``on_match`` message is recorded; otherwise the
+    ``on_timeout`` message is used.
+    """
+
+    name: str
+    description: str
+    first: str          # event_type value for the triggering event
+    second: str         # event_type value for the confirming event
+    window_seconds: int
+    chain_name: str
+    severity: Severity
+    on_match: str       # Message when second event arrives within window
+    on_timeout: str     # Message when second event does not arrive in time
 
 
 class CorrelationEngine:
@@ -68,7 +89,7 @@ class CorrelationEngine:
         Raises:
             FileNotFoundError: If ``rules_dir`` does not exist.
         """
-        self._rules: list[_Rule] = []
+        self._rules: list[Union[_Rule, _PairRule]] = []
         self._mapper = MitreMapper()
         self.load_rules(rules_dir)
 
@@ -93,7 +114,7 @@ class CorrelationEngine:
         if not os.path.isdir(rules_dir):
             raise FileNotFoundError(f"Rules directory not found: {rules_dir}")
 
-        self._rules = []
+        self._rules: list[Union[_Rule, _PairRule]] = []
         for fname in sorted(os.listdir(rules_dir)):
             if not fname.endswith(".yaml") and not fname.endswith(".yml"):
                 continue
@@ -124,7 +145,10 @@ class CorrelationEngine:
         chains: list[AttackChain] = []
 
         for rule in self._rules:
-            matched = self._match_rule(rule, sorted_events)
+            if isinstance(rule, _PairRule):
+                matched = self._match_pair_rule(rule, sorted_events)
+            else:
+                matched = self._match_rule(rule, sorted_events)
             chains.extend(matched)
 
         return chains
@@ -150,18 +174,40 @@ class CorrelationEngine:
             raise ValueError(f"Missing top-level 'rules' key in {file_path}")
 
         for entry in data["rules"]:
-            rule = self._parse_rule_entry(entry, file_path)
+            rule: Union[_Rule, _PairRule] = self._parse_rule_entry(entry, file_path)
             self._rules.append(rule)
 
-    def _parse_rule_entry(self, entry: dict, source: str) -> _Rule:
-        """Validate and convert a raw YAML rule dict into a _Rule dataclass.
+    def _parse_rule_entry(self, entry: dict, source: str) -> Union[_Rule, _PairRule]:
+        """Validate and convert a raw YAML rule dict into a typed rule dataclass.
+
+        Dispatches to ``_parse_sequence_rule`` for standard ``type=sequence``
+        rules (the default) and to ``_parse_pair_rule`` for
+        ``type=pair_with_window`` rules.
 
         Args:
             entry: Dict loaded from a single YAML rule entry.
             source: File path used in error messages only.
 
         Returns:
-            A validated _Rule instance.
+            A validated ``_Rule`` or ``_PairRule`` instance.
+
+        Raises:
+            ValueError: If required fields are missing or values are invalid.
+        """
+        rule_type = entry.get("type", "sequence")
+        if rule_type == "pair_with_window":
+            return self._parse_pair_rule(entry, source)
+        return self._parse_sequence_rule(entry, source)
+
+    def _parse_sequence_rule(self, entry: dict, source: str) -> _Rule:
+        """Validate and convert a raw YAML entry into a ``_Rule`` dataclass.
+
+        Args:
+            entry: Dict loaded from a single YAML sequence rule entry.
+            source: File path used in error messages only.
+
+        Returns:
+            A validated ``_Rule`` instance.
 
         Raises:
             ValueError: If required fields are missing or values are invalid.
@@ -179,7 +225,6 @@ class CorrelationEngine:
                 f"Rule '{entry['name']}' in {source} must have at least 2 conditions."
             )
 
-        # Validate condition values against known EventType values.
         valid_types = {e.value for e in EventType}
         for cond in conditions:
             if cond not in valid_types:
@@ -202,6 +247,55 @@ class CorrelationEngine:
             window_seconds=int(entry["window_seconds"]),
             chain_name=entry["chain_name"],
             severity=severity,
+        )
+
+    def _parse_pair_rule(self, entry: dict, source: str) -> _PairRule:
+        """Validate and convert a raw YAML entry into a ``_PairRule`` dataclass.
+
+        Args:
+            entry: Dict loaded from a single YAML pair_with_window rule entry.
+            source: File path used in error messages only.
+
+        Returns:
+            A validated ``_PairRule`` instance.
+
+        Raises:
+            ValueError: If required fields are missing or event types are unknown.
+        """
+        required = ("name", "first", "second", "window_seconds", "chain_name",
+                    "severity", "on_match", "on_timeout")
+        for field in required:
+            if field not in entry:
+                raise ValueError(
+                    f"PairWithWindow rule in {source} is missing required field '{field}': {entry}"
+                )
+
+        valid_types = {e.value for e in EventType}
+        for key in ("first", "second"):
+            val = entry[key]
+            if val not in valid_types:
+                raise ValueError(
+                    f"Rule '{entry['name']}' in {source}: unknown event_type '{val}' "
+                    f"for field '{key}'. Valid values: {sorted(valid_types)}"
+                )
+
+        severity_str = str(entry["severity"]).lower()
+        severity = _SEVERITY_MAP.get(severity_str)
+        if severity is None:
+            raise ValueError(
+                f"Rule '{entry['name']}' in {source}: unknown severity '{severity_str}'."
+            )
+
+        return _PairRule(
+            name=entry["name"],
+            description=entry.get("description", ""),
+            first=entry["first"],
+            second=entry["second"],
+            window_seconds=int(entry["window_seconds"]),
+            chain_name=entry["chain_name"],
+            severity=severity,
+            on_match=entry["on_match"],
+            on_timeout=entry["on_timeout"],
         )
 
     def _match_rule(self, rule: _Rule, sorted_events: list[RedSecEvent]) -> list[AttackChain]:
@@ -258,6 +352,98 @@ class CorrelationEngine:
                 anchor_idx += 1
 
         return chains
+
+    def _match_pair_rule(
+        self, rule: _PairRule, sorted_events: list[RedSecEvent]
+    ) -> list[AttackChain]:
+        """Find all PairWithWindow matches for a single pair rule.
+
+        For every occurrence of the *first* event type a chain is produced:
+        if the *second* event type is found within ``window_seconds`` of the
+        first event the chain carries the ``on_match`` outcome; otherwise it
+        carries the ``on_timeout`` outcome.  The anchor advances by one after
+        each first-event occurrence so all occurrences are processed.
+
+        Args:
+            rule: The ``_PairRule`` to evaluate.
+            sorted_events: Events sorted ascending by timestamp.
+
+        Returns:
+            List of ``AttackChain`` instances, one per first-event occurrence.
+            Empty if no first event is found.
+        """
+        chains: list[AttackChain] = []
+        window = timedelta(seconds=rule.window_seconds)
+        n = len(sorted_events)
+        anchor_idx = 0
+
+        while anchor_idx < n:
+            # Advance to the next event matching the first type.
+            while anchor_idx < n and sorted_events[anchor_idx].event_type != rule.first:
+                anchor_idx += 1
+            if anchor_idx >= n:
+                break
+
+            first_event = sorted_events[anchor_idx]
+            deadline = first_event.timestamp + window
+
+            # Search for the second event type within the window.
+            second_event: Optional[RedSecEvent] = None
+            for i in range(anchor_idx + 1, n):
+                candidate = sorted_events[i]
+                if candidate.timestamp > deadline:
+                    break
+                if candidate.event_type == rule.second:
+                    second_event = candidate
+                    break
+
+            chain = self._build_pair_chain(rule, first_event, second_event)
+            chains.append(chain)
+            anchor_idx += 1
+
+        return chains
+
+    def _build_pair_chain(
+        self,
+        rule: _PairRule,
+        first_event: RedSecEvent,
+        second_event: Optional[RedSecEvent],
+    ) -> AttackChain:
+        """Construct an AttackChain from a PairWithWindow evaluation result.
+
+        Sets ``pair_type``, ``pair_on_match``, ``pair_on_timeout``,
+        ``pair_window_seconds``, and ``pair_second_type`` on the returned
+        chain so that exporters can generate the correct SEC output.
+
+        Args:
+            rule: The ``_PairRule`` that produced this result.
+            first_event: The event matching ``rule.first``.
+            second_event: The event matching ``rule.second`` if found within
+                the window; ``None`` for a timeout outcome.
+
+        Returns:
+            An ``AttackChain`` enriched with MITRE ATT&CK data.
+        """
+        severity = Severity.critical if second_event is not None else rule.severity
+        end_time = second_event.timestamp if second_event is not None else first_event.timestamp
+
+        chain = AttackChain(
+            name=rule.chain_name,
+            start_time=first_event.timestamp,
+            end_time=end_time,
+            severity=severity,
+            pair_type="pair_with_window",
+            pair_on_match=rule.on_match,
+            pair_on_timeout=rule.on_timeout,
+            pair_window_seconds=rule.window_seconds,
+            pair_second_type=rule.second,
+        )
+        chain.add_event(first_event)
+        if second_event is not None:
+            chain.add_event(second_event)
+
+        self._mapper.enrich_chain(chain)
+        return chain
 
     def _build_chain(self, rule: _Rule, events: list[RedSecEvent]) -> AttackChain:
         """Construct and enrich an AttackChain from a matched event sequence.

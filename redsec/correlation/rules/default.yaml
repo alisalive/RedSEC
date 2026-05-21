@@ -71,3 +71,36 @@ rules:
     window_seconds: 86400
     chain_name: "AD Attack Chain"
     severity: critical
+
+  - name: "Recon to Exploit Pair"
+    description: "Port scan followed by exploitation — confirms active attack, not just recon."
+    type: pair_with_window
+    first: port_scan
+    second: exploit_success
+    window_seconds: 300
+    chain_name: "Recon to Exploit Pair"
+    severity: critical
+    on_match: "ATTACK CHAIN CONFIRMED: port_scan led to exploit_success"
+    on_timeout: "RECON ONLY: port_scan detected but no exploitation followed"
+
+  - name: "Credential Attack Pair"
+    description: "Failed login followed by successful login — confirms credential attack success."
+    type: pair_with_window
+    first: login_failed
+    second: login_success
+    window_seconds: 120
+    chain_name: "Credential Attack Pair"
+    severity: critical
+    on_match: "CREDENTIAL ATTACK CONFIRMED: brute force succeeded"
+    on_timeout: "BRUTE FORCE FAILED: login_failed with no success"
+
+  - name: "Lateral Movement Pair"
+    description: "Exploitation followed by lateral movement — confirms post-exploitation activity."
+    type: pair_with_window
+    first: exploit_success
+    second: lateral_movement
+    window_seconds: 600
+    chain_name: "Lateral Movement Pair"
+    severity: critical
+    on_match: "LATERAL MOVEMENT CONFIRMED: exploitation led to pivot"
+    on_timeout: "EXPLOITATION ONLY: no lateral movement detected"

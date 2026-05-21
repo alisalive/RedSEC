@@ -8,10 +8,26 @@ SEC reference: https://github.com/simple-evcorr/sec
 
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Optional
 
 from redsec.models.chain import AttackChain
 from redsec.models.event import RedSecEvent
+
+
+@dataclass
+class _PairRuleData:
+    """Carry-along data for generating a SEC PairWithWindow rule block.
+
+    Populated from :class:`~redsec.models.chain.AttackChain` pair fields
+    by :meth:`SecExporter.export_chain` and :meth:`SecExporter.export_all`
+    before calling :meth:`SecExporter._pair_rule`.
+    """
+
+    on_match: str       # Message written to output when both events matched
+    on_timeout: str     # Message written when first matched but second did not
+    window_seconds: int  # Time window configured in the original rule
 
 # Version string embedded in generated file headers.
 _REDSEC_VERSION = "1.0.0"
@@ -136,15 +152,27 @@ class SecExporter:
         lines.append(f"# End     : {chain.end_time.isoformat()}")
         lines.append("")
 
-        for idx, event in enumerate(chain.events, start=1):
-            lines.append(f"# Step {idx}: {event.event_type} on {event.target}")
-            lines.extend(self._single_rule(event, chain_name=chain.name))
+        if chain.pair_type == "pair_with_window":
+            first_event = chain.events[0]
+            second_event = chain.events[1] if len(chain.events) > 1 else None
+            rule_data = _PairRuleData(
+                on_match=chain.pair_on_match or "",
+                on_timeout=chain.pair_on_timeout or "",
+                window_seconds=chain.pair_window_seconds or 0,
+            )
+            lines.append("# PairWithWindow rule — SEC fires action on match, action2 on timeout")
+            lines.extend(self._pair_rule(chain, first_event, second_event, rule_data))
             lines.append("")
+        else:
+            for idx, event in enumerate(chain.events, start=1):
+                lines.append(f"# Step {idx}: {event.event_type} on {event.target}")
+                lines.extend(self._single_rule(event, chain_name=chain.name))
+                lines.append("")
 
-        # Chain-completion SingleWithThreshold rule.
-        lines.append("# Chain completion — fires after thresh matching write outputs")
-        lines.extend(self._eventgroup_rule(chain))
-        lines.append("")
+            # Chain-completion SingleWithThreshold rule.
+            lines.append("# Chain completion — fires after thresh matching write outputs")
+            lines.extend(self._eventgroup_rule(chain))
+            lines.append("")
 
         return self._write(output_path, lines)
 
@@ -186,14 +214,26 @@ class SecExporter:
             lines.append("#" + "=" * 77)
             lines.append("")
 
-            for step_idx, event in enumerate(chain.events, start=1):
-                lines.append(f"# Chain {chain_idx} / Step {step_idx}: {event.event_type} on {event.target}")
-                lines.extend(self._single_rule(event, chain_name=chain.name))
+            if chain.pair_type == "pair_with_window":
+                first_event = chain.events[0]
+                second_event = chain.events[1] if len(chain.events) > 1 else None
+                rule_data = _PairRuleData(
+                    on_match=chain.pair_on_match or "",
+                    on_timeout=chain.pair_on_timeout or "",
+                    window_seconds=chain.pair_window_seconds or 0,
+                )
+                lines.append(f"# Chain {chain_idx} PairWithWindow rule")
+                lines.extend(self._pair_rule(chain, first_event, second_event, rule_data))
                 lines.append("")
+            else:
+                for step_idx, event in enumerate(chain.events, start=1):
+                    lines.append(f"# Chain {chain_idx} / Step {step_idx}: {event.event_type} on {event.target}")
+                    lines.extend(self._single_rule(event, chain_name=chain.name))
+                    lines.append("")
 
-            lines.append(f"# Chain {chain_idx} completion rule")
-            lines.extend(self._eventgroup_rule(chain))
-            lines.append("")
+                lines.append(f"# Chain {chain_idx} completion rule")
+                lines.extend(self._eventgroup_rule(chain))
+                lines.append("")
 
         return self._write(output_path, lines)
 
@@ -234,6 +274,85 @@ class SecExporter:
             f"pattern={pattern}",
             f"desc={desc}",
             f"action=write - CHAIN: %s | EVENT: {event_type} | TARGET: {event.target} | MITRE: {technique}",
+        ]
+
+    def _pair_rule(
+        self,
+        chain: AttackChain,
+        first_event: RedSecEvent,
+        second_event: Optional[RedSecEvent],
+        rule: _PairRuleData,
+    ) -> list[str]:
+        """Build a SEC ``type=PairWithWindow`` rule block for a pair chain.
+
+        SEC's PairWithWindow rule fires ``action`` when ``pattern`` is matched
+        and then ``pattern2`` is matched within ``window`` seconds.  If the
+        second pattern is not seen within the window ``action2`` fires instead.
+
+        When ``second_event`` is ``None`` (a timeout chain with only the first
+        event recorded), a generic ``pattern2`` is derived from the chain's
+        ``pair_second_type`` field so the exported SEC rule remains functional.
+
+        Args:
+            chain: The ``AttackChain`` being exported; provides pair metadata.
+            first_event: The event matching the first pattern.
+            second_event: The event matching the second pattern, or ``None``
+                for timeout chains where no second event was observed.
+            rule: ``_PairRuleData`` carrying ``on_match``, ``on_timeout``, and
+                ``window_seconds`` values for the SEC rule actions.
+
+        Returns:
+            List of strings forming the SEC PairWithWindow rule block.
+        """
+        first_type = (
+            first_event.event_type
+            if isinstance(first_event.event_type, str)
+            else first_event.event_type.value
+        )
+        first_tool = (
+            first_event.tool if isinstance(first_event.tool, str) else first_event.tool.value
+        )
+        first_pattern = self._build_pattern(
+            first_tool, first_type, first_event.target, first_event.port, first_event.description
+        )
+        first_desc = f"redsec_PAIR_{_safe_label(first_type)}_first_desc"
+
+        if second_event is not None:
+            second_type = (
+                second_event.event_type
+                if isinstance(second_event.event_type, str)
+                else second_event.event_type.value
+            )
+            second_tool = (
+                second_event.tool
+                if isinstance(second_event.tool, str)
+                else second_event.tool.value
+            )
+            second_pattern = self._build_pattern(
+                second_tool,
+                second_type,
+                second_event.target,
+                second_event.port,
+                second_event.description,
+            )
+        else:
+            # Timeout chain — derive a generic pattern from the stored type.
+            second_type = chain.pair_second_type or "unknown"
+            second_pattern = r"\S+ \S+ " + re.escape(second_type)
+
+        second_desc = f"redsec_PAIR_{_safe_label(second_type)}_second_desc"
+
+        return [
+            "type=PairWithWindow",
+            "ptype=RegExp",
+            f"pattern={first_pattern}",
+            f"desc={first_desc}",
+            "ptype2=RegExp",
+            f"pattern2={second_pattern}",
+            f"desc2={second_desc}",
+            f"window={rule.window_seconds}",
+            f"action=write - {rule.on_match}",
+            f"action2=write - {rule.on_timeout}",
         ]
 
     def _eventgroup_rule(self, chain: AttackChain) -> list[str]:
