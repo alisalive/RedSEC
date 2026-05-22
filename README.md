@@ -108,20 +108,19 @@ Print version and SEC tool reference:
 
 ## Screenshots
 
-**nmap scan:**
-![nmap scan](screenshots/nmap.png)
+![RedSEC version and scan terminal output](screenshots/01_version_scan.png)
 
-**nuclei vulnerability scan:**
-![nuclei scan](screenshots/nuclei.png)
+![nmap XML input file creation](screenshots/02_nmap_input.png)
 
-**RedSEC pipeline output:**
-![RedSEC](screenshots/RedSEC.png)
+![nuclei, ffuf, hydra input files](screenshots/03_nuclei_ffuf_hydra_input.png)
 
-**HTML report:**
-![HTML Report](screenshots/report.png)
+![SEC-compatible event log output](screenshots/04_sec_log.png)
 
-**SEC integration alerts:**
-![SEC alerts](screenshots/SEC.png)
+![Generated SEC .conf rules](screenshots/05_sec_rules.png)
+
+![HTML report overview (stats dashboard)](screenshots/06_html_report_top.png)
+
+![HTML report attack chains detail](screenshots/07_html_report_chains.png)
 
 ---
 
