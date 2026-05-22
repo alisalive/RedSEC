@@ -355,7 +355,8 @@ class SecExporter:
         first_pattern = self._build_pattern(
             first_tool, first_type, first_event.target, first_event.port, first_event.description
         )
-        first_desc = f"redsec_PAIR_{_safe_label(first_type)}_first_desc"
+        first_port_seg = f"_{first_event.port}" if first_event.port is not None else ""
+        first_desc = f"redsec_PAIR_{_safe_label(first_type)}{first_port_seg}_first_desc"
 
         if second_event is not None:
             second_type = (
@@ -375,12 +376,14 @@ class SecExporter:
                 second_event.port,
                 second_event.description,
             )
+            second_port_seg = f"_{second_event.port}" if second_event.port is not None else ""
         else:
             # Timeout chain — derive a generic pattern from the stored type.
             second_type = chain.pair_second_type or "unknown"
             second_pattern = r"\S+ \S+ " + re.escape(second_type)
+            second_port_seg = ""
 
-        second_desc = f"redsec_PAIR_{_safe_label(second_type)}_second_desc"
+        second_desc = f"redsec_PAIR_{_safe_label(second_type)}{second_port_seg}_second_desc"
 
         return [
             "type=PairWithWindow",
@@ -437,7 +440,8 @@ class SecExporter:
             trigger_tool, trigger_type, trigger_event.target,
             trigger_event.port, trigger_event.description,
         )
-        trigger_desc = f"redsec_CTX_{_safe_label(trigger_type)}_trigger_desc"
+        trigger_port_seg = f"_{trigger_event.port}" if trigger_event.port is not None else ""
+        trigger_desc = f"redsec_CTX_{_safe_label(trigger_type)}{trigger_port_seg}_trigger_desc"
 
         if match_event is not None:
             match_type = (
@@ -455,13 +459,15 @@ class SecExporter:
                 match_tool, match_type, trigger_event.target,
                 match_event.port, match_event.description,
             )
+            match_port_seg = f"_{match_event.port}" if match_event.port is not None else ""
         else:
             match_type = chain.pair_second_type or "unknown"
             match_pattern = (
                 r"\S+ \S+ " + re.escape(match_type) + r" " + re.escape(trigger_event.target)
             )
+            match_port_seg = ""
 
-        match_desc = f"redsec_CTX_{_safe_label(match_type)}_match_desc"
+        match_desc = f"redsec_CTX_{_safe_label(match_type)}{match_port_seg}_match_desc"
 
         return [
             "type=PairWithWindow",
