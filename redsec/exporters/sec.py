@@ -30,7 +30,7 @@ class _PairRuleData:
     window_seconds: int  # Time window configured in the original rule
 
 # Version string embedded in generated file headers.
-_REDSEC_VERSION = "1.0.0"
+_REDSEC_VERSION = "1.1.0"
 
 # ---------------------------------------------------------------------------
 # Module-level constant: standard file header written to every .conf output.
