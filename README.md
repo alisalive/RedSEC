@@ -349,7 +349,8 @@ Feed this file directly to SEC with: `sec --conf=rules.conf --input=redsec.log`
     │   └── exporters/
     │       ├── sec.py
     │       ├── html.py
-    │       └── json.py
+    │       ├── json.py
+    │       └── logzilla.py
     ├── tests/
     ├── .github/
     │   └── workflows/
