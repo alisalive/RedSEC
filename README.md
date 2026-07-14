@@ -124,6 +124,10 @@ Print version and SEC tool reference:
 
 ![HTML report attack chains detail](screenshots/07_html_report_chains.png)
 
+![RedSEC LogZilla push — terminal output](screenshots/08_logzilla_scan_terminal.png)
+
+![LogZilla dashboard showing ingested RedSEC events](screenshots/09_logzilla_events.png)
+
 ---
 
 ## SEC Integration
