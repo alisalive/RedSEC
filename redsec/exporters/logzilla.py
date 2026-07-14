@@ -304,15 +304,43 @@ class LogzillaExporter:
                 if response.status_code < 300:
                     return True, response.status_code, ""
                 if response.status_code in (401, 403):
-                    return False, response.status_code, f"Authentication failed (HTTP {response.status_code})"
+                    body = self._response_body(response, token)
+                    return (
+                        False,
+                        response.status_code,
+                        f"Authentication failed (HTTP {response.status_code}): {body}",
+                    )
                 if response.status_code < 500:
-                    return False, response.status_code, f"LogZilla rejected the request (HTTP {response.status_code})"
+                    body = self._response_body(response, token)
+                    return (
+                        False,
+                        response.status_code,
+                        f"LogZilla rejected the request (HTTP {response.status_code}): {body}",
+                    )
                 last_detail = f"LogZilla server error (HTTP {response.status_code})"
 
             if attempt < max_retries:
                 time.sleep(retry_delay)
 
         return False, last_status, last_detail or "Failed after retries"
+
+    def _response_body(self, response: "requests.Response", token: str) -> str:
+        """Return a sanitized, truncated response body for error messages.
+
+        Args:
+            response: The HTTP response whose body should be read.
+            token: The token to redact if present in the body.
+
+        Returns:
+            The response text truncated to 500 characters with the token
+            redacted, or a placeholder if the body could not be read.
+        """
+        try:
+            text = response.text
+        except Exception:
+            return "<unreadable response body>"
+        text = self._sanitize_error(Exception(text), token)
+        return text[:500]
 
     def _sanitize_error(self, exc: Exception, token: str) -> str:
         """Return an error message with the LogZilla token stripped out.

@@ -270,3 +270,59 @@ class TestPushToLogzilla:
         assert result["failed"] == 1
         # One call for the bulk attempt, one for the sequential fallback — no retries within either.
         assert mock_post.call_count == 2
+
+    def test_client_error_detail_includes_response_body(self):
+        events = [_make_event()]
+        mock_response = Mock(status_code=422, text="field 'target' is invalid")
+        with patch("redsec.exporters.logzilla.requests.post", return_value=mock_response):
+            result = LogzillaExporter().push_to_logzilla(
+                events, "https://logzilla.example.com", "secret-token",
+                max_retries=1, retry_delay=0,
+            )
+        assert result["failed"] == 1
+        assert "field 'target' is invalid" in result["errors"][0]
+        assert "HTTP 422" in result["errors"][0]
+
+    def test_client_error_detail_truncated_to_500_chars(self):
+        events = [_make_event()]
+        long_body = "x" * 1000
+        mock_response = Mock(status_code=400, text=long_body)
+        with patch("redsec.exporters.logzilla.requests.post", return_value=mock_response):
+            result = LogzillaExporter().push_to_logzilla(
+                events, "https://logzilla.example.com", "secret-token",
+                max_retries=1, retry_delay=0,
+            )
+        assert len(result["errors"][0]) <= 500 + len("LogZilla rejected the request (HTTP 400): ")
+
+    def test_client_error_detail_redacts_token(self):
+        events = [_make_event()]
+        token = "super-secret-token-value"
+        mock_response = Mock(status_code=400, text=f"invalid token {token} supplied")
+        with patch("redsec.exporters.logzilla.requests.post", return_value=mock_response):
+            result = LogzillaExporter().push_to_logzilla(
+                events, "https://logzilla.example.com", token,
+                max_retries=1, retry_delay=0,
+            )
+        assert token not in result["errors"][0]
+
+    def test_client_error_detail_handles_unreadable_body(self):
+        events = [_make_event()]
+        mock_response = Mock(status_code=400)
+        type(mock_response).text = property(lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+        with patch("redsec.exporters.logzilla.requests.post", return_value=mock_response):
+            result = LogzillaExporter().push_to_logzilla(
+                events, "https://logzilla.example.com", "secret-token",
+                max_retries=1, retry_delay=0,
+            )
+        assert result["failed"] == 1
+        assert "<unreadable response body>" in result["errors"][0]
+
+    def test_auth_error_detail_includes_response_body(self):
+        events = [_make_event()]
+        mock_response = Mock(status_code=401, text="invalid credentials")
+        with patch("redsec.exporters.logzilla.requests.post", return_value=mock_response):
+            result = LogzillaExporter().push_to_logzilla(
+                events, "https://logzilla.example.com", "secret-token",
+                max_retries=1, retry_delay=0,
+            )
+        assert "Authentication failed (HTTP 401): invalid credentials" in result["errors"][0]
