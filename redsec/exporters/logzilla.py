@@ -55,13 +55,23 @@ class LogzillaExporter:
     # Public API
     # ------------------------------------------------------------------
 
-    def format_event(self, event: RedSecEvent, chain_id: Optional[str] = None) -> dict:
+    def format_event(
+        self,
+        event: RedSecEvent,
+        chain_id: Optional[str] = None,
+        use_current_time: bool = False,
+    ) -> dict:
         """Convert a RedSecEvent into LogZilla's HTTP Receiver JSON format.
 
         Args:
             event: The event to convert.
             chain_id: ID of the AttackChain this event belongs to, if any.
                 Included in ``extra_fields`` only when provided.
+            use_current_time: If True, always use the current time for the
+                ``ts`` field instead of ``event.timestamp``. Useful when
+                pushing historical/archival events to LogZilla as if they
+                were live, since LogZilla may reject events with stale
+                timestamps as "outdated".
 
         Returns:
             A dict matching LogZilla's HTTP Event Receiver schema
@@ -75,7 +85,10 @@ class LogzillaExporter:
         if chain_id is not None:
             extra_fields["chain_id"] = str(chain_id)
 
-        timestamp = event.timestamp.timestamp() if event.timestamp is not None else time.time()
+        if use_current_time:
+            timestamp = time.time()
+        else:
+            timestamp = event.timestamp.timestamp() if event.timestamp is not None else time.time()
 
         return {
             "ts": timestamp,
@@ -131,6 +144,7 @@ class LogzillaExporter:
         max_retries: int = 3,
         retry_delay: float = 1.0,
         timeout: float = 10.0,
+        use_current_time: bool = False,
     ) -> dict:
         """Push events to a LogZilla HTTP Event Receiver.
 
@@ -152,6 +166,9 @@ class LogzillaExporter:
             max_retries: Maximum POST attempts per batch/event before giving up.
             retry_delay: Seconds to wait between retry attempts.
             timeout: Per-request timeout in seconds.
+            use_current_time: If True, always use the current time for each
+                event's ``ts`` field instead of ``event.timestamp``, so
+                historical/archival events are treated as live by LogZilla.
 
         Returns:
             A summary dict: ``{"sent": int, "failed": int, "errors": list[str],
@@ -175,7 +192,10 @@ class LogzillaExporter:
         }
         chain_id_map = self._build_chain_id_map(chains) if chains else {}
         formatted = [
-            self.format_event(event, chain_id=chain_id_map.get(event.id)) for event in events
+            self.format_event(
+                event, chain_id=chain_id_map.get(event.id), use_current_time=use_current_time
+            )
+            for event in events
         ]
 
         sent = 0

@@ -1,0 +1,1206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RedSEC Report</title>
+<style>
+  :root {
+    --bg:        #0d1117;
+    --bg2:       #161b22;
+    --bg3:       #21262d;
+    --border:    #30363d;
+    --text:      #c9d1d9;
+    --text-dim:  #8b949e;
+    --text-head: #f0f6fc;
+    --accent:    #58a6ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, monospace; font-size: 14px; line-height: 1.6; }
+
+  /* Layout */
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+
+  /* Header */
+  .site-header { border-bottom: 1px solid var(--border); padding-bottom: 24px; margin-bottom: 32px; }
+  .logo { font-size: 28px; font-weight: 700; color: var(--text-head); letter-spacing: 2px; }
+  .logo span { color: var(--accent); }
+  .meta { color: var(--text-dim); font-size: 12px; margin-top: 6px; }
+  .overall-severity { display: inline-block; margin-top: 10px; padding: 4px 14px; border-radius: 20px; font-weight: 700; font-size: 13px; }
+
+  /* Summary cards */
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 40px; }
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; text-align: center; }
+  .card-value { font-size: 32px; font-weight: 700; color: var(--text-head); }
+  .card-label { color: var(--text-dim); font-size: 12px; margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+
+  /* Chain block */
+  .chain { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 32px; overflow: hidden; }
+  .chain-header { padding: 18px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+  .chain-name { font-size: 18px; font-weight: 700; color: var(--text-head); flex: 1; }
+  .chain-meta { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+
+  /* Badges */
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
+  .badge-severity { font-size: 13px; padding: 4px 14px; }
+  .mitre-list { padding: 10px 24px; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .mitre-label { color: var(--text-dim); font-size: 12px; margin-right: 4px; }
+  .mitre-badge { background: #1f3560; border: 1px solid #3b5ba5; color: #93c5fd; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+
+  /* Timeline table */
+  .timeline { width: 100%; border-collapse: collapse; }
+  .timeline th { background: var(--bg3); color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  .timeline td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; font-size: 13px; }
+  .timeline tr:last-child td { border-bottom: none; }
+  .timeline tr:hover td { background: var(--bg3); }
+  .ts { font-family: monospace; color: var(--text-dim); white-space: nowrap; font-size: 12px; }
+  .target { font-family: monospace; color: var(--accent); }
+  .port { font-family: monospace; color: var(--text-dim); }
+  .desc { color: var(--text); }
+  .risk-bar-wrap { display: flex; align-items: center; gap: 6px; min-width: 80px; }
+  .risk-bar-bg { background: var(--bg3); border-radius: 4px; height: 6px; flex: 1; overflow: hidden; }
+  .risk-bar-fill { height: 100%; border-radius: 4px; }
+  .risk-val { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+
+  /* SEC hint */
+  .sec-hint { padding: 14px 24px; background: var(--bg3); border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); font-family: monospace; }
+  .sec-hint strong { color: var(--accent); }
+
+  /* Footer */
+  .footer { text-align: center; color: var(--text-dim); font-size: 12px; padding: 32px 0 16px; border-top: 1px solid var(--border); margin-top: 40px; }
+  .footer a { color: var(--accent); text-decoration: none; }
+
+  /* Responsive */
+  @media (max-width: 640px) {
+    .chain-header { flex-direction: column; align-items: flex-start; }
+    .summary-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="logo"><span style="color:#ff4444">RED</span><span>SEC</span></div>
+    <div class="meta">Generated 2026-07-14T16:09:58Z &nbsp;|&nbsp; RedSEC v1.2.0</div>
+    <div>
+      <span class="badge badge-severity overall-severity"
+            style="background:#ff4444; color:#fff">
+        CRITICAL
+      </span>
+    </div>
+  </header>
+
+  <!-- Summary -->
+  <section class="summary-grid">
+    <div class="card"><div class="card-value">10</div><div class="card-label">Attack Chains</div></div>
+    <div class="card"><div class="card-value">19</div><div class="card-label">Total Events</div></div>
+    <div class="card"><div class="card-value">2</div><div class="card-label">Unique Targets</div></div>
+    <div class="card"><div class="card-value">2</div><div class="card-label">MITRE Techniques</div></div>
+  </section>
+
+  <!-- Chains -->
+  
+  
+  
+  
+  <section class="chain">
+
+    <div class="chain-header">
+      <span class="chain-name">Recon to Vuln Chain</span>
+      <span class="badge badge-severity"
+            style="background:#ff8800; color:#fff">
+        HIGH
+      </span>
+      <span class="chain-meta">2 events</span>
+      <span class="chain-meta">4m 51s</span>
+    </div>
+
+    
+    <div class="mitre-list">
+      <span class="mitre-label">MITRE ATT&CK</span>
+      
+      <span class="mitre-badge">T1046</span>
+      
+      <span class="mitre-badge">T1190</span>
+      
+    </div>
+    
+
+    <table class="timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tool</th>
+          <th>Event Type</th>
+          <th>Target</th>
+          <th>Port</th>
+          <th>Description</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">22</td>
+          <td class="desc">Open TCP port 22 on 45.33.32.156 (ssh)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:100%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">1.00</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 20:38:37</td>
+          <td>
+            <span class="badge" style="background:#ff4444">nuclei</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#44aa44; color:#fff">
+              vuln_found
+            </span>
+          </td>
+          <td class="target">scanme.nmap.org</td>
+          <td class="port">&amp;mdash;</td>
+          <td class="desc">[apache-mod-negotiation-listing] Apache mod_negotiation - Pseudo Directory Listing detected on http://scanme.nmap.org/index</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:45%;
+                            background:#ffcc00">
+                </div>
+              </div>
+              <span class="risk-val">0.45</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+      </tbody>
+    </table>
+
+    <div class="sec-hint">
+      <strong>SEC export hint:</strong>
+      redsec export --format sec --chain "Recon to Vuln Chain" --output report.conf
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      then: sec --conf=report.conf --input=logfile.log
+    </div>
+
+  </section>
+  
+  
+  
+  
+  <section class="chain">
+
+    <div class="chain-header">
+      <span class="chain-name">Recon to Exploit Pair</span>
+      <span class="badge badge-severity"
+            style="background:#ff4444; color:#fff">
+        CRITICAL
+      </span>
+      <span class="chain-meta">1 events</span>
+      <span class="chain-meta">0s</span>
+    </div>
+
+    
+    <div class="mitre-list">
+      <span class="mitre-label">MITRE ATT&CK</span>
+      
+      <span class="mitre-badge">T1046</span>
+      
+    </div>
+    
+
+    <table class="timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tool</th>
+          <th>Event Type</th>
+          <th>Target</th>
+          <th>Port</th>
+          <th>Description</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">22</td>
+          <td class="desc">Open TCP port 22 on 45.33.32.156 (ssh)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:100%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">1.00</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+      </tbody>
+    </table>
+
+    <div class="sec-hint">
+      <strong>SEC export hint:</strong>
+      redsec export --format sec --chain "Recon to Exploit Pair" --output report.conf
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      then: sec --conf=report.conf --input=logfile.log
+    </div>
+
+  </section>
+  
+  
+  
+  
+  <section class="chain">
+
+    <div class="chain-header">
+      <span class="chain-name">Recon to Exploit Pair</span>
+      <span class="badge badge-severity"
+            style="background:#ff4444; color:#fff">
+        CRITICAL
+      </span>
+      <span class="chain-meta">1 events</span>
+      <span class="chain-meta">0s</span>
+    </div>
+
+    
+    <div class="mitre-list">
+      <span class="mitre-label">MITRE ATT&CK</span>
+      
+      <span class="mitre-badge">T1046</span>
+      
+    </div>
+    
+
+    <table class="timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tool</th>
+          <th>Event Type</th>
+          <th>Target</th>
+          <th>Port</th>
+          <th>Description</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">80</td>
+          <td class="desc">Open TCP port 80 on 45.33.32.156 (http)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:95%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">0.95</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+      </tbody>
+    </table>
+
+    <div class="sec-hint">
+      <strong>SEC export hint:</strong>
+      redsec export --format sec --chain "Recon to Exploit Pair" --output report.conf
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      then: sec --conf=report.conf --input=logfile.log
+    </div>
+
+  </section>
+  
+  
+  
+  
+  <section class="chain">
+
+    <div class="chain-header">
+      <span class="chain-name">Recon to Exploit Pair</span>
+      <span class="badge badge-severity"
+            style="background:#ff4444; color:#fff">
+        CRITICAL
+      </span>
+      <span class="chain-meta">1 events</span>
+      <span class="chain-meta">0s</span>
+    </div>
+
+    
+    <div class="mitre-list">
+      <span class="mitre-label">MITRE ATT&CK</span>
+      
+      <span class="mitre-badge">T1046</span>
+      
+    </div>
+    
+
+    <table class="timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tool</th>
+          <th>Event Type</th>
+          <th>Target</th>
+          <th>Port</th>
+          <th>Description</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">9929</td>
+          <td class="desc">Open TCP port 9929 on 45.33.32.156 (nping-echo)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:95%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">0.95</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+      </tbody>
+    </table>
+
+    <div class="sec-hint">
+      <strong>SEC export hint:</strong>
+      redsec export --format sec --chain "Recon to Exploit Pair" --output report.conf
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      then: sec --conf=report.conf --input=logfile.log
+    </div>
+
+  </section>
+  
+  
+  
+  
+  <section class="chain">
+
+    <div class="chain-header">
+      <span class="chain-name">Recon to Exploit Pair</span>
+      <span class="badge badge-severity"
+            style="background:#ff4444; color:#fff">
+        CRITICAL
+      </span>
+      <span class="chain-meta">1 events</span>
+      <span class="chain-meta">0s</span>
+    </div>
+
+    
+    <div class="mitre-list">
+      <span class="mitre-label">MITRE ATT&CK</span>
+      
+      <span class="mitre-badge">T1046</span>
+      
+    </div>
+    
+
+    <table class="timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tool</th>
+          <th>Event Type</th>
+          <th>Target</th>
+          <th>Port</th>
+          <th>Description</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">31337</td>
+          <td class="desc">Open TCP port 31337 on 45.33.32.156 (Elite)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:95%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">0.95</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+      </tbody>
+    </table>
+
+    <div class="sec-hint">
+      <strong>SEC export hint:</strong>
+      redsec export --format sec --chain "Recon to Exploit Pair" --output report.conf
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      then: sec --conf=report.conf --input=logfile.log
+    </div>
+
+  </section>
+  
+  
+  
+  
+  <section class="chain">
+
+    <div class="chain-header">
+      <span class="chain-name">Same Target Attack</span>
+      <span class="badge badge-severity"
+            style="background:#ff8800; color:#fff">
+        HIGH
+      </span>
+      <span class="chain-meta">2 events</span>
+      <span class="chain-meta">4m 51s</span>
+    </div>
+
+    
+    <div class="mitre-list">
+      <span class="mitre-label">MITRE ATT&CK</span>
+      
+      <span class="mitre-badge">T1046</span>
+      
+      <span class="mitre-badge">T1190</span>
+      
+    </div>
+    
+
+    <table class="timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tool</th>
+          <th>Event Type</th>
+          <th>Target</th>
+          <th>Port</th>
+          <th>Description</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">22</td>
+          <td class="desc">Open TCP port 22 on 45.33.32.156 (ssh)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:100%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">1.00</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 20:38:37</td>
+          <td>
+            <span class="badge" style="background:#ff4444">nuclei</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#44aa44; color:#fff">
+              vuln_found
+            </span>
+          </td>
+          <td class="target">scanme.nmap.org</td>
+          <td class="port">&amp;mdash;</td>
+          <td class="desc">[apache-mod-negotiation-listing] Apache mod_negotiation - Pseudo Directory Listing detected on http://scanme.nmap.org/index</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:45%;
+                            background:#ffcc00">
+                </div>
+              </div>
+              <span class="risk-val">0.45</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+      </tbody>
+    </table>
+
+    <div class="sec-hint">
+      <strong>SEC export hint:</strong>
+      redsec export --format sec --chain "Same Target Attack" --output report.conf
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      then: sec --conf=report.conf --input=logfile.log
+    </div>
+
+  </section>
+  
+  
+  
+  
+  <section class="chain">
+
+    <div class="chain-header">
+      <span class="chain-name">Same Target Attack</span>
+      <span class="badge badge-severity"
+            style="background:#ff8800; color:#fff">
+        HIGH
+      </span>
+      <span class="chain-meta">2 events</span>
+      <span class="chain-meta">4m 51s</span>
+    </div>
+
+    
+    <div class="mitre-list">
+      <span class="mitre-label">MITRE ATT&CK</span>
+      
+      <span class="mitre-badge">T1046</span>
+      
+      <span class="mitre-badge">T1190</span>
+      
+    </div>
+    
+
+    <table class="timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tool</th>
+          <th>Event Type</th>
+          <th>Target</th>
+          <th>Port</th>
+          <th>Description</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">80</td>
+          <td class="desc">Open TCP port 80 on 45.33.32.156 (http)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:95%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">0.95</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 20:38:37</td>
+          <td>
+            <span class="badge" style="background:#ff4444">nuclei</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#44aa44; color:#fff">
+              vuln_found
+            </span>
+          </td>
+          <td class="target">scanme.nmap.org</td>
+          <td class="port">&amp;mdash;</td>
+          <td class="desc">[apache-mod-negotiation-listing] Apache mod_negotiation - Pseudo Directory Listing detected on http://scanme.nmap.org/index</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:45%;
+                            background:#ffcc00">
+                </div>
+              </div>
+              <span class="risk-val">0.45</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+      </tbody>
+    </table>
+
+    <div class="sec-hint">
+      <strong>SEC export hint:</strong>
+      redsec export --format sec --chain "Same Target Attack" --output report.conf
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      then: sec --conf=report.conf --input=logfile.log
+    </div>
+
+  </section>
+  
+  
+  
+  
+  <section class="chain">
+
+    <div class="chain-header">
+      <span class="chain-name">Same Target Attack</span>
+      <span class="badge badge-severity"
+            style="background:#ff8800; color:#fff">
+        HIGH
+      </span>
+      <span class="chain-meta">2 events</span>
+      <span class="chain-meta">4m 51s</span>
+    </div>
+
+    
+    <div class="mitre-list">
+      <span class="mitre-label">MITRE ATT&CK</span>
+      
+      <span class="mitre-badge">T1046</span>
+      
+      <span class="mitre-badge">T1190</span>
+      
+    </div>
+    
+
+    <table class="timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tool</th>
+          <th>Event Type</th>
+          <th>Target</th>
+          <th>Port</th>
+          <th>Description</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">9929</td>
+          <td class="desc">Open TCP port 9929 on 45.33.32.156 (nping-echo)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:95%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">0.95</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 20:38:37</td>
+          <td>
+            <span class="badge" style="background:#ff4444">nuclei</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#44aa44; color:#fff">
+              vuln_found
+            </span>
+          </td>
+          <td class="target">scanme.nmap.org</td>
+          <td class="port">&amp;mdash;</td>
+          <td class="desc">[apache-mod-negotiation-listing] Apache mod_negotiation - Pseudo Directory Listing detected on http://scanme.nmap.org/index</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:45%;
+                            background:#ffcc00">
+                </div>
+              </div>
+              <span class="risk-val">0.45</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+      </tbody>
+    </table>
+
+    <div class="sec-hint">
+      <strong>SEC export hint:</strong>
+      redsec export --format sec --chain "Same Target Attack" --output report.conf
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      then: sec --conf=report.conf --input=logfile.log
+    </div>
+
+  </section>
+  
+  
+  
+  
+  <section class="chain">
+
+    <div class="chain-header">
+      <span class="chain-name">Same Target Attack</span>
+      <span class="badge badge-severity"
+            style="background:#ff8800; color:#fff">
+        HIGH
+      </span>
+      <span class="chain-meta">2 events</span>
+      <span class="chain-meta">4m 51s</span>
+    </div>
+
+    
+    <div class="mitre-list">
+      <span class="mitre-label">MITRE ATT&CK</span>
+      
+      <span class="mitre-badge">T1046</span>
+      
+      <span class="mitre-badge">T1190</span>
+      
+    </div>
+    
+
+    <table class="timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tool</th>
+          <th>Event Type</th>
+          <th>Target</th>
+          <th>Port</th>
+          <th>Description</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">31337</td>
+          <td class="desc">Open TCP port 31337 on 45.33.32.156 (Elite)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:95%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">0.95</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 20:38:37</td>
+          <td>
+            <span class="badge" style="background:#ff4444">nuclei</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#44aa44; color:#fff">
+              vuln_found
+            </span>
+          </td>
+          <td class="target">scanme.nmap.org</td>
+          <td class="port">&amp;mdash;</td>
+          <td class="desc">[apache-mod-negotiation-listing] Apache mod_negotiation - Pseudo Directory Listing detected on http://scanme.nmap.org/index</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:45%;
+                            background:#ffcc00">
+                </div>
+              </div>
+              <span class="risk-val">0.45</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+      </tbody>
+    </table>
+
+    <div class="sec-hint">
+      <strong>SEC export hint:</strong>
+      redsec export --format sec --chain "Same Target Attack" --output report.conf
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      then: sec --conf=report.conf --input=logfile.log
+    </div>
+
+  </section>
+  
+  
+  
+  
+  <section class="chain">
+
+    <div class="chain-header">
+      <span class="chain-name">Mass Scan Detected</span>
+      <span class="badge badge-severity"
+            style="background:#ff8800; color:#fff">
+        HIGH
+      </span>
+      <span class="chain-meta">5 events</span>
+      <span class="chain-meta">0s</span>
+    </div>
+
+    
+    <div class="mitre-list">
+      <span class="mitre-label">MITRE ATT&CK</span>
+      
+      <span class="mitre-badge">T1046</span>
+      
+      <span class="mitre-badge">T1190</span>
+      
+    </div>
+    
+
+    <table class="timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tool</th>
+          <th>Event Type</th>
+          <th>Target</th>
+          <th>Port</th>
+          <th>Description</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">22</td>
+          <td class="desc">Open TCP port 22 on 45.33.32.156 (ssh)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:100%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">1.00</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">80</td>
+          <td class="desc">Open TCP port 80 on 45.33.32.156 (http)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:95%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">0.95</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">9929</td>
+          <td class="desc">Open TCP port 9929 on 45.33.32.156 (nping-echo)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:95%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">0.95</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#4488ff">nmap</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#4488ff; color:#fff">
+              port_scan
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">31337</td>
+          <td class="desc">Open TCP port 31337 on 45.33.32.156 (Elite)</td>
+          <td>
+            
+            <div class="risk-bar-wrap">
+              <div class="risk-bar-bg">
+                <div class="risk-bar-fill"
+                     style="width:95%;
+                            background:#ff4444">
+                </div>
+              </div>
+              <span class="risk-val">0.95</span>
+            </div>
+            
+          </td>
+        </tr>
+        
+        
+        
+        
+        <tr>
+          <td class="ts">2026-05-15 16:33:46</td>
+          <td>
+            <span class="badge" style="background:#888888">redsec</span>
+          </td>
+          <td>
+            <span class="badge" style="background:#ff8800; color:#fff">
+              vuln_found
+            </span>
+          </td>
+          <td class="target">45.33.32.156</td>
+          <td class="port">&amp;mdash;</td>
+          <td class="desc">SYNTHETIC: Mass port scan detected — 3+ scans in 300 seconds</td>
+          <td>
+            
+            <span style="color:var(--text-dim)">—</span>
+            
+          </td>
+        </tr>
+        
+      </tbody>
+    </table>
+
+    <div class="sec-hint">
+      <strong>SEC export hint:</strong>
+      redsec export --format sec --chain "Mass Scan Detected" --output report.conf
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      then: sec --conf=report.conf --input=logfile.log
+    </div>
+
+  </section>
+  
+
+  <footer class="footer">
+    Generated by <strong>RedSEC v1.2.0</strong> &mdash;
+    SEC integration: <a href="https://github.com/simple-evcorr/sec" target="_blank">Risto Vaarandi's SEC</a>
+  </footer>
+
+</div>
+</body>
+</html>

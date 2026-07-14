@@ -201,6 +201,19 @@ with `{"detail": "ok"}`:
     export LOGZILLA_TOKEN=YOUR_TOKEN
     redsec scan --nmap scan.xml --push-logzilla https://logzilla.example.com
 
+**`--logzilla-fresh-timestamps`** — when pushing to LogZilla, use the
+current time for every event's `ts` field instead of its original
+timestamp. LogZilla may reject events with old/stale timestamps (e.g.
+parsed from historical scan files) as "outdated"; this flag lets you push
+that data as if it were live. It only affects `--push-logzilla` — file
+export via `--out-logzilla-json` always keeps the original event
+timestamps, for offline/archival use:
+
+    redsec scan --nmap old_scan.xml \
+      --push-logzilla https://logzilla.example.com \
+      --logzilla-token YOUR_TOKEN \
+      --logzilla-fresh-timestamps
+
 Each event is mapped to LogZilla's fields as follows: `ts` (event timestamp
 as epoch seconds), `host` (target), `program` (`redsec`), `message` (event
 description), and `priority` — an RFC-3164 facility+severity value

@@ -168,6 +168,7 @@ def logzilla_test(url: str, token: Optional[str]) -> None:
 @click.option("--out-logzilla-json", default=None, help="Write events in LogZilla HTTP Receiver JSON-lines format to PATH (optional).")
 @click.option("--push-logzilla", default=None, help="Push events directly to a LogZilla HTTP Event Receiver at this base URL (optional).")
 @click.option("--logzilla-token", default=None, help="LogZilla API token. Falls back to the LOGZILLA_TOKEN env var if not provided.")
+@click.option("--logzilla-fresh-timestamps", is_flag=True, default=False, help="Push events to LogZilla with the current time instead of their original timestamps (useful when source data is old but should be treated as live).")
 def scan(
     nmap: Optional[str],
     nuclei: Optional[str],
@@ -186,6 +187,7 @@ def scan(
     out_logzilla_json: Optional[str],
     push_logzilla: Optional[str],
     logzilla_token: Optional[str],
+    logzilla_fresh_timestamps: bool,
 ) -> None:
     """Parse tool output files, correlate events, and generate reports.
 
@@ -365,7 +367,8 @@ def scan(
             try:
                 logzilla_exporter = LogzillaExporter()
                 result = logzilla_exporter.push_to_logzilla(
-                    all_events, push_logzilla, token, chains=chains
+                    all_events, push_logzilla, token, chains=chains,
+                    use_current_time=logzilla_fresh_timestamps,
                 )
                 _ok(f"LogZilla push complete — sent={result['sent']} failed={result['failed']}")
                 for err_msg in result["errors"]:

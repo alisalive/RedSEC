@@ -1,6 +1,8 @@
 """Tests for redsec.exporters.logzilla.LogzillaExporter."""
 
 import json
+import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 import pytest
@@ -62,6 +64,21 @@ class TestFormatEvent:
         record = LogzillaExporter().format_event(event)
         for old_key in ("msg", "app-name", "severity", "structured-data"):
             assert old_key not in record
+
+    def test_use_current_time_false_keeps_event_timestamp(self):
+        event = _make_event()
+        event.timestamp = datetime.now(timezone.utc) - timedelta(days=30)
+        record = LogzillaExporter().format_event(event, use_current_time=False)
+        assert record["ts"] == event.timestamp.timestamp()
+
+    def test_use_current_time_true_ignores_stale_event_timestamp(self):
+        event = _make_event()
+        event.timestamp = datetime.now(timezone.utc) - timedelta(days=30)
+        before = time.time()
+        record = LogzillaExporter().format_event(event, use_current_time=True)
+        after = time.time()
+        assert record["ts"] != event.timestamp.timestamp()
+        assert before <= record["ts"] <= after
 
     def test_extra_fields_contains_mitre_fields(self):
         event = _make_event(mitre_technique="T1595", mitre_tactic="Reconnaissance")
@@ -219,6 +236,31 @@ class TestPushToLogzilla:
         body = mock_post.call_args.kwargs["json"]
         assert list(body.keys()) == ["events"]
         assert len(body["events"]) == 2
+
+    def test_use_current_time_false_keeps_stale_event_timestamps(self):
+        event = _make_event()
+        event.timestamp = datetime.now(timezone.utc) - timedelta(days=30)
+        mock_response = Mock(status_code=202)
+        with patch("redsec.exporters.logzilla.requests.post", return_value=mock_response) as mock_post:
+            LogzillaExporter().push_to_logzilla(
+                [event], "https://logzilla.example.com", "secret-token", use_current_time=False
+            )
+        sent_ts = mock_post.call_args.kwargs["json"]["events"][0]["ts"]
+        assert sent_ts == event.timestamp.timestamp()
+
+    def test_use_current_time_true_overrides_stale_event_timestamps(self):
+        event = _make_event()
+        event.timestamp = datetime.now(timezone.utc) - timedelta(days=30)
+        mock_response = Mock(status_code=202)
+        before = time.time()
+        with patch("redsec.exporters.logzilla.requests.post", return_value=mock_response) as mock_post:
+            LogzillaExporter().push_to_logzilla(
+                [event], "https://logzilla.example.com", "secret-token", use_current_time=True
+            )
+        after = time.time()
+        sent_ts = mock_post.call_args.kwargs["json"]["events"][0]["ts"]
+        assert sent_ts != event.timestamp.timestamp()
+        assert before <= sent_ts <= after
 
     def test_sends_authorization_header(self):
         events = [_make_event()]
