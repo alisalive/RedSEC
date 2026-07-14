@@ -20,6 +20,7 @@ def _make_event(
     mitre_tactic="Discovery",
     detection_risk=None,
     description=None,
+    tags=None,
 ):
     return RedSecEvent(
         tool=tool,
@@ -30,6 +31,7 @@ def _make_event(
         mitre_technique=mitre_technique,
         mitre_tactic=mitre_tactic,
         detection_risk=detection_risk,
+        tags=tags or [],
     )
 
 
@@ -112,6 +114,16 @@ class TestFormatEvent:
         event = _make_event(detection_risk=None)
         record = LogzillaExporter().format_event(event)
         assert record["priority"] == 1 * 8 + 6
+
+    def test_user_tags_is_dict_when_tags_present(self):
+        event = _make_event(tags=["scan", "external"])
+        record = LogzillaExporter().format_event(event)
+        assert record["user_tags"] == {"tag_0": "scan", "tag_1": "external"}
+
+    def test_user_tags_is_empty_dict_when_no_tags(self):
+        event = _make_event(tags=[])
+        record = LogzillaExporter().format_event(event)
+        assert record["user_tags"] == {}
 
 
 # ---------------------------------------------------------------------------

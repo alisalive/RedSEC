@@ -83,7 +83,7 @@ class LogzillaExporter:
             "program": _PROGRAM_NAME,
             "message": event.description,
             "priority": self._map_syslog_severity(event.detection_risk),
-            "user_tags": event.tags,
+            "user_tags": {f"tag_{i}": tag for i, tag in enumerate(event.tags)} if event.tags else {},
             "extra_fields": extra_fields,
         }
 
