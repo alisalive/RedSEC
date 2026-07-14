@@ -19,7 +19,7 @@ from redsec.exporters.logzilla import LogzillaExporter
 from redsec.exporters.sec import SecExporter
 from redsec.mitre.mapper import MitreMapper
 from redsec.models.chain import AttackChain
-from redsec.models.event import RedSecEvent, Severity
+from redsec.models.event import EventType, RedSecEvent, Severity, ToolName
 from redsec.parsers.feroxbuster import FeroxbusterParser
 from redsec.parsers.ffuf import FfufParser
 from redsec.parsers.hydra import HydraParser
@@ -101,6 +101,53 @@ def version() -> None:
     click.echo(f"Author    : {__author__}")
     click.echo(f"SEC tool  : {__sec_reference__}")
     click.echo("SEC (Simple Event Correlator) by Risto Vaarandi")
+
+
+@redsec.command(name="logzilla-test")
+@click.option("--url", required=True, help="Base URL of the LogZilla instance to test (e.g. https://logzilla.example.com).")
+@click.option("--token", default=None, help="LogZilla API token. Falls back to the LOGZILLA_TOKEN env var if not provided.")
+def logzilla_test(url: str, token: Optional[str]) -> None:
+    """Send a single synthetic test event to LogZilla to validate connectivity.
+
+    Use this before a real scan to confirm --push-logzilla / --logzilla-token
+    are configured correctly. Distinguishes authentication failures from
+    network/unreachable-host failures in its error output.
+    """
+    click.echo(click.style(f"\nRedSEC v{__version__} — LogZilla connectivity test\n", fg="cyan", bold=True))
+
+    resolved_token = token or os.environ.get("LOGZILLA_TOKEN")
+    if not resolved_token:
+        _err("No LogZilla token provided. Use --token or set LOGZILLA_TOKEN.")
+        sys.exit(1)
+
+    test_event = RedSecEvent(
+        tool=ToolName.redsec,
+        event_type=EventType.port_scan,
+        severity=Severity.info,
+        target="redsec-cli",
+        description="redsec_connectivity_check",
+        tags=["redsec_connectivity_check"],
+    )
+
+    _info(f"Sending test event to {url}/incoming ...")
+    try:
+        exporter = LogzillaExporter()
+        result = exporter.push_to_logzilla([test_event], url, resolved_token, max_retries=2, retry_delay=1.0)
+    except ValueError as exc:
+        _err(f"LogZilla connectivity test failed: {exc}")
+        sys.exit(1)
+    except Exception as exc:
+        _err(f"LogZilla connectivity test failed: {exc}")
+        sys.exit(1)
+
+    if result["failed"] == 0 and result["sent"] == 1:
+        status = result.get("status_code")
+        status_str = f" (HTTP {status})" if status else ""
+        _ok(f"LogZilla connectivity OK{status_str} — test event accepted.")
+    else:
+        detail = result["errors"][0] if result["errors"] else "Unknown error."
+        _err(f"LogZilla connectivity test failed: {detail}")
+        sys.exit(1)
 
 
 @redsec.command()

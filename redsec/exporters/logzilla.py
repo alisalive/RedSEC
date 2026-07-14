@@ -140,9 +140,20 @@ class LogzillaExporter:
             timeout: Per-request timeout in seconds.
 
         Returns:
-            A summary dict: ``{"sent": int, "failed": int, "errors": list[str]}``.
-            Error messages never contain the token.
+            A summary dict: ``{"sent": int, "failed": int, "errors": list[str],
+            "status_code": Optional[int]}``. ``status_code`` is the most
+            recent HTTP status code observed (from either a successful or
+            failed request), or ``None`` if no response was ever received
+            (pure network failure). Error messages never contain the token.
+
+        Raises:
+            ValueError: If ``url`` or ``token`` is empty or None.
         """
+        if not url:
+            raise ValueError("LogZilla push failed: 'url' is required and cannot be empty.")
+        if not token:
+            raise ValueError("LogZilla push failed: 'token' is required and cannot be empty.")
+
         endpoint = f"{url.rstrip('/')}/incoming"
         headers = {
             "Authorization": f"token {token}",
@@ -156,19 +167,16 @@ class LogzillaExporter:
         sent = 0
         failed = 0
         errors: list[str] = []
+        last_status: Optional[int] = None
 
         for i in range(0, len(formatted), batch_size):
             batch = formatted[i : i + batch_size]
 
-            bulk_ok = False
-            try:
-                bulk_ok = self._post_with_retry(
-                    endpoint, headers, batch, max_retries, retry_delay, timeout, token
-                )
-            except Exception:
-                # Bulk request failed — fall through to the per-event fallback
-                # below, which records its own errors per event.
-                pass
+            bulk_ok, status, _detail = self._post_with_retry(
+                endpoint, headers, batch, max_retries, retry_delay, timeout, token
+            )
+            if status is not None:
+                last_status = status
 
             if bulk_ok:
                 sent += len(batch)
@@ -176,19 +184,18 @@ class LogzillaExporter:
 
             # Bulk request failed — fall back to sequential per-event POSTs.
             for item in batch:
-                try:
-                    if self._post_with_retry(
-                        endpoint, headers, item, max_retries, retry_delay, timeout, token
-                    ):
-                        sent += 1
-                    else:
-                        failed += 1
-                        errors.append("Failed to push event to LogZilla after retries.")
-                except Exception as exc:
+                ok, status, detail = self._post_with_retry(
+                    endpoint, headers, item, max_retries, retry_delay, timeout, token
+                )
+                if status is not None:
+                    last_status = status
+                if ok:
+                    sent += 1
+                else:
                     failed += 1
-                    errors.append(self._sanitize_error(exc, token))
+                    errors.append(detail or "Failed to push event to LogZilla after retries.")
 
-        return {"sent": sent, "failed": failed, "errors": errors}
+        return {"sent": sent, "failed": failed, "errors": errors, "status_code": last_status}
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -230,8 +237,12 @@ class LogzillaExporter:
         retry_delay: float,
         timeout: float,
         token: str,
-    ) -> bool:
+    ) -> tuple[bool, Optional[int], str]:
         """POST a payload to LogZilla, retrying on network/server errors.
+
+        Distinguishes authentication failures, client-side rejections,
+        server errors, and network-level failures (unreachable host,
+        timeout) so callers can surface a clear, actionable message.
 
         Args:
             endpoint: Full URL to POST to.
@@ -240,40 +251,47 @@ class LogzillaExporter:
             max_retries: Maximum number of attempts.
             retry_delay: Seconds to sleep between attempts.
             timeout: Per-request timeout in seconds.
-            token: LogZilla token, used only to sanitize re-raised exceptions.
+            token: LogZilla token, used only to sanitize error messages.
 
         Returns:
-            True if the request succeeded (HTTP status < 300), False if it
-            failed with a non-retryable client error (status 400-499).
-
-        Raises:
-            requests.RequestException: If all retry attempts are exhausted
-                due to network errors or server errors (5xx). The token is
-                stripped from the exception message before re-raising.
+            A ``(success, status_code, detail)`` tuple. ``success`` is True
+            when the request returned a status < 300. ``status_code`` is the
+            last HTTP status observed, or None if no response was ever
+            received. ``detail`` is empty on success, otherwise a sanitized,
+            categorized failure description (never contains the token).
+            Client errors (4xx) and successes return immediately without
+            retrying; network errors and 5xx responses are retried up to
+            ``max_retries`` times.
         """
-        last_exc: Optional[Exception] = None
+        last_status: Optional[int] = None
+        last_detail = ""
 
         for attempt in range(1, max_retries + 1):
             try:
                 response = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
+            except requests.exceptions.Timeout as exc:
+                last_status = None
+                last_detail = f"Network error (timeout): {self._sanitize_error(exc, token)}"
+            except requests.exceptions.ConnectionError as exc:
+                last_status = None
+                last_detail = f"Network error (host unreachable): {self._sanitize_error(exc, token)}"
             except requests.RequestException as exc:
-                last_exc = exc
+                last_status = None
+                last_detail = f"Network error: {self._sanitize_error(exc, token)}"
             else:
+                last_status = response.status_code
                 if response.status_code < 300:
-                    return True
+                    return True, response.status_code, ""
+                if response.status_code in (401, 403):
+                    return False, response.status_code, f"Authentication failed (HTTP {response.status_code})"
                 if response.status_code < 500:
-                    # Client error — retrying will not help.
-                    return False
-                last_exc = requests.RequestException(
-                    f"LogZilla returned HTTP {response.status_code}"
-                )
+                    return False, response.status_code, f"LogZilla rejected the request (HTTP {response.status_code})"
+                last_detail = f"LogZilla server error (HTTP {response.status_code})"
 
             if attempt < max_retries:
                 time.sleep(retry_delay)
 
-        if last_exc is not None:
-            raise type(last_exc)(self._sanitize_error(last_exc, token))
-        return False
+        return False, last_status, last_detail or "Failed after retries"
 
     def _sanitize_error(self, exc: Exception, token: str) -> str:
         """Return an error message with the LogZilla token stripped out.

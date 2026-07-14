@@ -47,6 +47,8 @@ SEC project: https://github.com/simple-evcorr/sec
   consumable directly by Vaarandi's SEC daemon
 - HTML report — dark-theme timeline with severity badges, MITRE technique tags,
   and detection risk bars; no external dependencies
+- LogZilla HTTP Event Receiver export — push events directly to LogZilla or
+  write LogZilla-formatted JSON lines to a file
 - Cross-platform — Windows, Linux, macOS
 
 ---
@@ -166,6 +168,50 @@ Each chain produces:
 SEC patterns are URL-aware: ffuf/feroxbuster events use the full URL as the
 pattern anchor to prevent duplicate matches across events sharing the same
 tool, event_type, and target.
+
+---
+
+## LogZilla Integration
+
+RedSEC can export events to a [LogZilla](https://logzilla.net/) HTTP Event
+Receiver, either as a JSON-lines file or by pushing them directly over HTTP.
+
+**`--out-logzilla-json PATH`** — write every event to `PATH` in LogZilla's
+HTTP Receiver JSON format (one JSON object per line):
+
+    redsec scan --nmap scan.xml --nuclei findings.jsonl \
+      --out-logzilla-json events.logzilla.jsonl
+
+**`--push-logzilla URL`** — push events directly to a running LogZilla
+instance at `URL` (the `/incoming` endpoint is appended automatically):
+
+    redsec scan --nmap scan.xml --nuclei findings.jsonl \
+      --push-logzilla https://logzilla.example.com \
+      --logzilla-token YOUR_TOKEN
+
+**`--logzilla-token TOKEN`** — LogZilla API token, sent as
+`Authorization: token <token>`. If omitted, RedSEC falls back to the
+`LOGZILLA_TOKEN` environment variable:
+
+    export LOGZILLA_TOKEN=YOUR_TOKEN
+    redsec scan --nmap scan.xml --push-logzilla https://logzilla.example.com
+
+Each event's LogZilla `severity` is derived from its detection risk score:
+`0.0-0.3` → `info`, `0.3-0.7` → `warning`, `0.7-1.0` → `critical`.
+MITRE technique/tactic, detection score, and chain ID (when applicable) are
+included in `structured-data`. The token is never written to log output,
+exception messages, or the JSON file.
+
+**`redsec logzilla-test`** — validate LogZilla connectivity and
+authentication before running a full scan, by sending a single minimal
+`redsec_connectivity_check` event:
+
+    redsec logzilla-test --url https://logzilla.example.com --token YOUR_TOKEN
+
+On success it prints the HTTP status returned by LogZilla. On failure it
+prints a clear, token-redacted message distinguishing authentication
+failures (HTTP 401/403) from network failures (unreachable host, timeout)
+and other server errors.
 
 ---
 

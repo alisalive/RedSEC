@@ -138,6 +138,27 @@ class TestExportToFile:
 # push_to_logzilla
 # ---------------------------------------------------------------------------
 
+class TestPushToLogzillaValidation:
+    @pytest.mark.parametrize("url,token", [("", "secret-token"), (None, "secret-token")])
+    def test_raises_value_error_on_empty_url(self, url, token):
+        events = [_make_event()]
+        with pytest.raises(ValueError):
+            LogzillaExporter().push_to_logzilla(events, url, token)
+
+    @pytest.mark.parametrize("token", ["", None])
+    def test_raises_value_error_on_empty_token(self, token):
+        events = [_make_event()]
+        with pytest.raises(ValueError):
+            LogzillaExporter().push_to_logzilla(events, "https://logzilla.example.com", token)
+
+    def test_no_request_sent_when_url_missing(self):
+        events = [_make_event()]
+        with patch("redsec.exporters.logzilla.requests.post") as mock_post:
+            with pytest.raises(ValueError):
+                LogzillaExporter().push_to_logzilla(events, "", "secret-token")
+        mock_post.assert_not_called()
+
+
 class TestPushToLogzilla:
     def test_successful_bulk_push(self):
         events = [_make_event(), _make_event(tool="nuclei", event_type="vuln_found")]
