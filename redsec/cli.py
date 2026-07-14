@@ -15,6 +15,7 @@ import click
 from redsec import __author__, __sec_reference__, __version__
 from redsec.correlation.engine import CorrelationEngine
 from redsec.exporters.html import HtmlExporter
+from redsec.exporters.logzilla import LogzillaExporter
 from redsec.exporters.sec import SecExporter
 from redsec.mitre.mapper import MitreMapper
 from redsec.models.chain import AttackChain
@@ -117,6 +118,9 @@ def version() -> None:
 @click.option("--out-sec",      default="redsec_rules.conf",   show_default=True, help="Output SEC .conf path.")
 @click.option("--out-json",     default=None, help="Output JSON path (optional).")
 @click.option("--out-log",      default=None, help="Write parsed events as SEC-compatible log lines to PATH (for use with: sec --input=PATH).")
+@click.option("--out-logzilla-json", default=None, help="Write events in LogZilla HTTP Receiver JSON-lines format to PATH (optional).")
+@click.option("--push-logzilla", default=None, help="Push events directly to a LogZilla HTTP Event Receiver at this base URL (optional).")
+@click.option("--logzilla-token", default=None, help="LogZilla API token. Falls back to the LOGZILLA_TOKEN env var if not provided.")
 def scan(
     nmap: Optional[str],
     nuclei: Optional[str],
@@ -132,6 +136,9 @@ def scan(
     out_sec: str,
     out_json: Optional[str],
     out_log: Optional[str],
+    out_logzilla_json: Optional[str],
+    push_logzilla: Optional[str],
+    logzilla_token: Optional[str],
 ) -> None:
     """Parse tool output files, correlate events, and generate reports.
 
@@ -146,7 +153,9 @@ def scan(
     6. Export HTML report
     7. Optionally export JSON
     8. Optionally write SEC log file (--out-log)
-    9. Print summary table
+    9. Optionally export LogZilla JSON (--out-logzilla-json)
+    10. Optionally push events to LogZilla (--push-logzilla)
+    11. Print summary table
 
     At least one input file must be provided.
     """
@@ -283,9 +292,44 @@ def scan(
             _warn(f"SEC log export failed: {exc}")
 
     # ------------------------------------------------------------------
-    # Step 9: Summary table
+    # Step 9: LogZilla JSON export (optional)
     # ------------------------------------------------------------------
-    _print_summary(all_events, chains, sec_path, html_path, json_path, log_path)
+    logzilla_json_path: Optional[str] = None
+    if out_logzilla_json:
+        _info("Exporting LogZilla JSON lines...")
+        try:
+            logzilla_exporter = LogzillaExporter()
+            logzilla_json_path = logzilla_exporter.export_to_file(
+                all_events, out_logzilla_json, chains=chains
+            )
+            _ok(f"LogZilla JSON written to: {logzilla_json_path}")
+        except Exception as exc:
+            _warn(f"LogZilla JSON export failed: {exc}")
+
+    # ------------------------------------------------------------------
+    # Step 10: Push to LogZilla (optional)
+    # ------------------------------------------------------------------
+    if push_logzilla:
+        _info("Pushing events to LogZilla...")
+        token = logzilla_token or os.environ.get("LOGZILLA_TOKEN")
+        if not token:
+            _err("LogZilla push requested but no token provided. Use --logzilla-token or set LOGZILLA_TOKEN.")
+        else:
+            try:
+                logzilla_exporter = LogzillaExporter()
+                result = logzilla_exporter.push_to_logzilla(
+                    all_events, push_logzilla, token, chains=chains
+                )
+                _ok(f"LogZilla push complete — sent={result['sent']} failed={result['failed']}")
+                for err_msg in result["errors"]:
+                    _warn(f"LogZilla: {err_msg}")
+            except Exception as exc:
+                _warn(f"LogZilla push failed: {exc}")
+
+    # ------------------------------------------------------------------
+    # Step 11: Summary table
+    # ------------------------------------------------------------------
+    _print_summary(all_events, chains, sec_path, html_path, json_path, log_path, logzilla_json_path)
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +436,7 @@ def _print_summary(
     html_path: Optional[str],
     json_path: Optional[str],
     log_path: Optional[str] = None,
+    logzilla_json_path: Optional[str] = None,
 ) -> None:
     """Print a formatted summary table to the terminal.
 
@@ -402,6 +447,7 @@ def _print_summary(
         html_path: Path of the HTML report, or None if export failed.
         json_path: Path of the JSON export, or None if not requested/failed.
         log_path: Path of the SEC log file, or None if not requested/failed.
+        logzilla_json_path: Path of the LogZilla JSON export, or None if not requested/failed.
     """
     unique_targets = len({e.target for e in events})
     unique_techniques = len({e.mitre_technique for e in events if e.mitre_technique})
@@ -427,6 +473,8 @@ def _print_summary(
         click.echo(click.style(f"    JSON : {json_path}", fg="green"))
     if log_path:
         click.echo(click.style(f"    LOG  : {log_path}", fg="green"))
+    if logzilla_json_path:
+        click.echo(click.style(f"    LOGZILLA JSON : {logzilla_json_path}", fg="green"))
     click.echo("")
 
 
