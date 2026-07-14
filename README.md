@@ -110,23 +110,13 @@ Print version and SEC tool reference:
 
 ## Screenshots
 
-![RedSEC version and scan terminal output](screenshots/01_version_scan.png)
+![RedSEC version output](screenshots/01_version.png)
 
-![nmap XML input file creation](screenshots/02_nmap_input.png)
+![Full scan with LogZilla push — terminal output](screenshots/02_logzilla_scan_terminal.png)
 
-![nuclei, ffuf, hydra input files](screenshots/03_nuclei_ffuf_hydra_input.png)
+![LogZilla dashboard showing ingested RedSEC events](screenshots/03_logzilla_events.png)
 
-![SEC-compatible event log output](screenshots/04_sec_log.png)
-
-![Generated SEC .conf rules](screenshots/05_sec_rules.png)
-
-![HTML report overview (stats dashboard)](screenshots/06_html_report_top.png)
-
-![HTML report attack chains detail](screenshots/07_html_report_chains.png)
-
-![RedSEC LogZilla push — terminal output](screenshots/08_logzilla_scan_terminal.png)
-
-![LogZilla dashboard showing ingested RedSEC events](screenshots/09_logzilla_events.png)
+![Generated HTML report](screenshots/04_html_report.png)
 
 ---
 
