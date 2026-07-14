@@ -4,7 +4,8 @@ Converts RedSecEvent / AttackChain objects into LogZilla's HTTP Receiver
 JSON format, and can either write them to a JSON-lines file or push them
 directly to a LogZilla instance over HTTP.
 
-LogZilla HTTP Event Receiver reference: https://docs.logzilla.net/
+LogZilla HTTP Event Receiver reference:
+https://logzilla.ai/docs/receiving-data/http-event-receiver
 """
 
 import json
@@ -17,12 +18,20 @@ import requests
 from redsec.models.chain import AttackChain
 from redsec.models.event import RedSecEvent
 
-# Application name reported to LogZilla for every event.
-_APP_NAME = "redsec"
+# Program name reported to LogZilla for every event.
+_PROGRAM_NAME = "redsec"
 
-# Detection-risk score thresholds mapped to LogZilla severities.
+# RFC-3164 facility used for all RedSEC events (1 = user-level messages).
+_FACILITY_USER = 1
+
+# Detection-risk score thresholds mapped to syslog severity levels.
 _SEVERITY_LOW = 0.3
 _SEVERITY_HIGH = 0.7
+
+# RFC-3164 syslog severity levels.
+_SYSLOG_CRITICAL = 2
+_SYSLOG_WARNING = 4
+_SYSLOG_INFO = 6
 
 # Redacted placeholder used whenever a token would otherwise leak into
 # an error message.
@@ -52,25 +61,30 @@ class LogzillaExporter:
         Args:
             event: The event to convert.
             chain_id: ID of the AttackChain this event belongs to, if any.
-                Included in ``structured-data`` only when provided.
+                Included in ``extra_fields`` only when provided.
 
         Returns:
-            A dict matching LogZilla's expected HTTP Receiver schema.
+            A dict matching LogZilla's HTTP Event Receiver schema
+            (ts, host, program, message, priority, user_tags, extra_fields, json).
         """
-        structured_data: dict = {
-            "mitre_technique": event.mitre_technique,
-            "mitre_tactic": event.mitre_tactic,
-            "detection_score": event.detection_risk,
+        extra_fields: dict = {
+            "mitre_technique": str(event.mitre_technique),
+            "mitre_tactic": str(event.mitre_tactic),
+            "detection_score": str(event.detection_risk),
         }
         if chain_id is not None:
-            structured_data["chain_id"] = chain_id
+            extra_fields["chain_id"] = str(chain_id)
+
+        timestamp = event.timestamp.timestamp() if event.timestamp is not None else time.time()
 
         return {
+            "ts": timestamp,
             "host": event.target,
-            "app-name": _APP_NAME,
-            "msg": event.description,
-            "severity": self._map_severity(event.detection_risk),
-            "structured-data": structured_data,
+            "program": _PROGRAM_NAME,
+            "message": event.description,
+            "priority": self._map_syslog_severity(event.detection_risk),
+            "user_tags": event.tags,
+            "extra_fields": extra_fields,
         }
 
     def export_to_file(
@@ -85,7 +99,7 @@ class LogzillaExporter:
             events: Events to export.
             path: Destination file path.
             chains: Optional attack chains, used to tag each event's
-                ``structured-data.chain_id`` when it belongs to a chain.
+                ``extra_fields.chain_id`` when it belongs to a chain.
 
         Returns:
             The absolute path of the written file.
@@ -103,7 +117,7 @@ class LogzillaExporter:
         with open(abs_path, "w", encoding="utf-8") as fh:
             for event in events:
                 record = self.format_event(event, chain_id=chain_id_map.get(event.id))
-                fh.write(json.dumps(record) + "\n")
+                fh.write(json.dumps({"events": [record]}) + "\n")
 
         return abs_path
 
@@ -173,7 +187,7 @@ class LogzillaExporter:
             batch = formatted[i : i + batch_size]
 
             bulk_ok, status, _detail = self._post_with_retry(
-                endpoint, headers, batch, max_retries, retry_delay, timeout, token
+                endpoint, headers, {"events": batch}, max_retries, retry_delay, timeout, token
             )
             if status is not None:
                 last_status = status
@@ -185,7 +199,7 @@ class LogzillaExporter:
             # Bulk request failed — fall back to sequential per-event POSTs.
             for item in batch:
                 ok, status, detail = self._post_with_retry(
-                    endpoint, headers, item, max_retries, retry_delay, timeout, token
+                    endpoint, headers, {"events": [item]}, max_retries, retry_delay, timeout, token
                 )
                 if status is not None:
                     last_status = status
@@ -201,21 +215,28 @@ class LogzillaExporter:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _map_severity(self, score: Optional[float]) -> str:
-        """Map a detection_risk score (0.0-1.0) to a LogZilla severity string.
+    def _map_syslog_severity(self, score: Optional[float]) -> int:
+        """Map a detection_risk score (0.0-1.0) to an RFC-3164 priority value.
+
+        Priority is computed as ``facility * 8 + severity``, using the
+        user-level facility (1) and a syslog severity level derived from
+        the detection risk score: >=0.7 -> 2 (critical), 0.3-0.7 -> 4
+        (warning), <0.3 -> 6 (info).
 
         Args:
             score: Detection risk score, or None if not scored.
 
         Returns:
-            One of ``"info"``, ``"warning"``, or ``"critical"``.
+            The combined RFC-3164 priority integer.
         """
         value = score if score is not None else 0.0
-        if value < _SEVERITY_LOW:
-            return "info"
-        if value < _SEVERITY_HIGH:
-            return "warning"
-        return "critical"
+        if value >= _SEVERITY_HIGH:
+            severity = _SYSLOG_CRITICAL
+        elif value >= _SEVERITY_LOW:
+            severity = _SYSLOG_WARNING
+        else:
+            severity = _SYSLOG_INFO
+        return _FACILITY_USER * 8 + severity
 
     def _build_chain_id_map(self, chains: list[AttackChain]) -> dict[str, str]:
         """Build a mapping of event id -> chain id for chain membership lookup.
@@ -247,7 +268,7 @@ class LogzillaExporter:
         Args:
             endpoint: Full URL to POST to.
             headers: Request headers, including the Authorization token.
-            payload: JSON-serializable body (single event dict or a batch list).
+            payload: JSON-serializable body, i.e. ``{"events": [...]}``.
             max_retries: Maximum number of attempts.
             retry_delay: Seconds to sleep between attempts.
             timeout: Per-request timeout in seconds.

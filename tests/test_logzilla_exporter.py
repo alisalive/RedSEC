@@ -46,54 +46,72 @@ class TestFormatEvent:
         event = _make_event(target="192.168.1.5")
         record = LogzillaExporter().format_event(event)
         assert record["host"] == "192.168.1.5"
-        assert record["app-name"] == "redsec"
-        assert record["msg"] == event.description
+        assert record["program"] == "redsec"
+        assert record["message"] == event.description
 
-    def test_structured_data_contains_mitre_fields(self):
+    def test_has_ts_field(self):
+        event = _make_event()
+        record = LogzillaExporter().format_event(event)
+        assert isinstance(record["ts"], float)
+        assert record["ts"] == event.timestamp.timestamp()
+
+    def test_no_old_fields(self):
+        event = _make_event()
+        record = LogzillaExporter().format_event(event)
+        for old_key in ("msg", "app-name", "severity", "structured-data"):
+            assert old_key not in record
+
+    def test_extra_fields_contains_mitre_fields(self):
         event = _make_event(mitre_technique="T1595", mitre_tactic="Reconnaissance")
         record = LogzillaExporter().format_event(event)
-        sd = record["structured-data"]
-        assert sd["mitre_technique"] == "T1595"
-        assert sd["mitre_tactic"] == "Reconnaissance"
+        ef = record["extra_fields"]
+        assert ef["mitre_technique"] == "T1595"
+        assert ef["mitre_tactic"] == "Reconnaissance"
 
-    def test_structured_data_contains_detection_score(self):
+    def test_extra_fields_contains_detection_score(self):
         event = _make_event(detection_risk=0.42)
         record = LogzillaExporter().format_event(event)
-        assert record["structured-data"]["detection_score"] == 0.42
+        assert record["extra_fields"]["detection_score"] == "0.42"
+
+    def test_extra_fields_values_are_strings(self):
+        event = _make_event(detection_risk=0.42)
+        record = LogzillaExporter().format_event(event, chain_id="chain-123")
+        for value in record["extra_fields"].values():
+            assert isinstance(value, str)
 
     def test_chain_id_included_when_provided(self):
         event = _make_event()
         record = LogzillaExporter().format_event(event, chain_id="chain-123")
-        assert record["structured-data"]["chain_id"] == "chain-123"
+        assert record["extra_fields"]["chain_id"] == "chain-123"
 
     def test_chain_id_absent_when_not_provided(self):
         event = _make_event()
         record = LogzillaExporter().format_event(event)
-        assert "chain_id" not in record["structured-data"]
+        assert "chain_id" not in record["extra_fields"]
 
     @pytest.mark.parametrize(
-        "score,expected",
+        "score,expected_priority",
         [
-            (0.0, "info"),
-            (0.1, "info"),
-            (0.29, "info"),
-            (0.3, "warning"),
-            (0.5, "warning"),
-            (0.69, "warning"),
-            (0.7, "critical"),
-            (0.9, "critical"),
-            (1.0, "critical"),
+            (0.0, 1 * 8 + 6),
+            (0.1, 1 * 8 + 6),
+            (0.29, 1 * 8 + 6),
+            (0.3, 1 * 8 + 4),
+            (0.5, 1 * 8 + 4),
+            (0.69, 1 * 8 + 4),
+            (0.7, 1 * 8 + 2),
+            (0.9, 1 * 8 + 2),
+            (1.0, 1 * 8 + 2),
         ],
     )
-    def test_severity_mapping(self, score, expected):
+    def test_priority_mapping(self, score, expected_priority):
         event = _make_event(detection_risk=score)
         record = LogzillaExporter().format_event(event)
-        assert record["severity"] == expected
+        assert record["priority"] == expected_priority
 
-    def test_severity_defaults_to_info_when_score_missing(self):
+    def test_priority_defaults_to_info_when_score_missing(self):
         event = _make_event(detection_risk=None)
         record = LogzillaExporter().format_event(event)
-        assert record["severity"] == "info"
+        assert record["priority"] == 1 * 8 + 6
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +128,15 @@ class TestExportToFile:
         for line in lines:
             json.loads(line)  # must be valid JSON
 
+    def test_lines_wrapped_in_events_key(self, tmp_path):
+        events = [_make_event()]
+        path = str(tmp_path / "out.jsonl")
+        LogzillaExporter().export_to_file(events, path)
+        line = json.loads(open(path).read().strip())
+        assert "events" in line
+        assert isinstance(line["events"], list)
+        assert line["events"][0]["host"] == events[0].target
+
     def test_tags_events_with_chain_id(self, tmp_path):
         e1 = _make_event()
         e2 = _make_event(tool="nuclei", event_type="vuln_found")
@@ -117,8 +144,8 @@ class TestExportToFile:
         path = str(tmp_path / "out.jsonl")
         LogzillaExporter().export_to_file([e1, e2], path, chains=[chain])
         lines = [json.loads(l) for l in open(path).read().strip().split("\n")]
-        assert lines[0]["structured-data"]["chain_id"] == chain.id
-        assert "chain_id" not in lines[1]["structured-data"]
+        assert lines[0]["events"][0]["extra_fields"]["chain_id"] == chain.id
+        assert "chain_id" not in lines[1]["events"][0]["extra_fields"]
 
     def test_returns_absolute_path(self, tmp_path):
         events = [_make_event()]
@@ -162,7 +189,7 @@ class TestPushToLogzillaValidation:
 class TestPushToLogzilla:
     def test_successful_bulk_push(self):
         events = [_make_event(), _make_event(tool="nuclei", event_type="vuln_found")]
-        mock_response = Mock(status_code=200)
+        mock_response = Mock(status_code=202)
         with patch("redsec.exporters.logzilla.requests.post", return_value=mock_response) as mock_post:
             result = LogzillaExporter().push_to_logzilla(events, "https://logzilla.example.com", "secret-token")
         assert result["sent"] == 2
@@ -172,9 +199,18 @@ class TestPushToLogzilla:
         called_url = mock_post.call_args.args[0] if mock_post.call_args.args else mock_post.call_args.kwargs.get("url")
         assert called_url == "https://logzilla.example.com/incoming"
 
+    def test_bulk_push_wraps_batch_in_events_key(self):
+        events = [_make_event(), _make_event(tool="nuclei", event_type="vuln_found")]
+        mock_response = Mock(status_code=202)
+        with patch("redsec.exporters.logzilla.requests.post", return_value=mock_response) as mock_post:
+            LogzillaExporter().push_to_logzilla(events, "https://logzilla.example.com", "secret-token")
+        body = mock_post.call_args.kwargs["json"]
+        assert list(body.keys()) == ["events"]
+        assert len(body["events"]) == 2
+
     def test_sends_authorization_header(self):
         events = [_make_event()]
-        mock_response = Mock(status_code=200)
+        mock_response = Mock(status_code=202)
         with patch("redsec.exporters.logzilla.requests.post", return_value=mock_response) as mock_post:
             LogzillaExporter().push_to_logzilla(events, "https://logzilla.example.com", "secret-token")
         headers = mock_post.call_args.kwargs["headers"]
@@ -211,7 +247,7 @@ class TestPushToLogzilla:
     def test_bulk_failure_falls_back_and_individual_success_counts(self):
         events = [_make_event(), _make_event(tool="nuclei", event_type="vuln_found")]
         bulk_fail = Mock(status_code=500)
-        individual_ok = Mock(status_code=200)
+        individual_ok = Mock(status_code=202)
         with patch(
             "redsec.exporters.logzilla.requests.post",
             side_effect=[bulk_fail, bulk_fail, individual_ok, individual_ok],

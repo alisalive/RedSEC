@@ -175,15 +175,20 @@ tool, event_type, and target.
 
 RedSEC can export events to a [LogZilla](https://logzilla.net/) HTTP Event
 Receiver, either as a JSON-lines file or by pushing them directly over HTTP.
+Each event is formatted per LogZilla's
+[HTTP Event Receiver schema](https://logzilla.ai/docs/receiving-data/http-event-receiver)
+and wrapped in `{"events": [...]}`.
 
 **`--out-logzilla-json PATH`** — write every event to `PATH` in LogZilla's
-HTTP Receiver JSON format (one JSON object per line):
+HTTP Receiver JSON format (one `{"events": [...]}` object per line):
 
     redsec scan --nmap scan.xml --nuclei findings.jsonl \
       --out-logzilla-json events.logzilla.jsonl
 
 **`--push-logzilla URL`** — push events directly to a running LogZilla
-instance at `URL` (the `/incoming` endpoint is appended automatically):
+instance at `URL` (the `/incoming` endpoint is appended automatically).
+Events are POSTed as `{"events": [...]}`; a successful push returns HTTP 202
+with `{"detail": "ok"}`:
 
     redsec scan --nmap scan.xml --nuclei findings.jsonl \
       --push-logzilla https://logzilla.example.com \
@@ -196,11 +201,15 @@ instance at `URL` (the `/incoming` endpoint is appended automatically):
     export LOGZILLA_TOKEN=YOUR_TOKEN
     redsec scan --nmap scan.xml --push-logzilla https://logzilla.example.com
 
-Each event's LogZilla `severity` is derived from its detection risk score:
-`0.0-0.3` → `info`, `0.3-0.7` → `warning`, `0.7-1.0` → `critical`.
-MITRE technique/tactic, detection score, and chain ID (when applicable) are
-included in `structured-data`. The token is never written to log output,
-exception messages, or the JSON file.
+Each event is mapped to LogZilla's fields as follows: `ts` (event timestamp
+as epoch seconds), `host` (target), `program` (`redsec`), `message` (event
+description), and `priority` — an RFC-3164 facility+severity value
+(`facility * 8 + severity`, facility=1/user-level) where the severity level
+is derived from the detection risk score: `>=0.7` → 2 (critical),
+`0.3-0.7` → 4 (warning), `<0.3` → 6 (info). `user_tags` carries the event's
+tags. MITRE technique/tactic, detection score, and chain ID (when
+applicable) are included as stringified values in `extra_fields`. The token
+is never written to log output, exception messages, or the JSON file.
 
 **`redsec logzilla-test`** — validate LogZilla connectivity and
 authentication before running a full scan, by sending a single minimal
