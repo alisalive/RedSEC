@@ -11,6 +11,11 @@ import sys
 from typing import Optional
 
 import click
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file in the current working directory
+# (e.g. ANTHROPIC_API_KEY, GROQ_API_KEY) before anything else reads os.environ.
+load_dotenv()
 
 from redsec import __author__, __sec_reference__, __version__
 from redsec.correlation.engine import CorrelationEngine
@@ -30,6 +35,8 @@ from redsec.parsers.nuclei import NucleiParser
 from redsec.parsers.sqlmap import SqlmapParser
 from redsec.parsers.subfinder import SubfinderParser
 from redsec.scoring.detection import DetectionScorer
+from redsec.smart_correlation.detector import TemplateDetector
+from redsec.smart_correlation.reducer import AlertReducer
 
 # Default rules directory bundled with the package.
 _DEFAULT_RULES_DIR = os.path.join(os.path.dirname(__file__), "correlation", "rules")
@@ -161,6 +168,8 @@ def logzilla_test(url: str, token: Optional[str]) -> None:
 @click.option("--metasploit",   type=click.Path(exists=True), default=None, help="Metasploit JSON export file.")
 @click.option("--impacket",     type=click.Path(exists=True), default=None, help="Impacket secretsdump output file.")
 @click.option("--rules-dir",    type=click.Path(exists=True), default=None, help="Custom correlation rules directory.")
+@click.option("--smart-correlate", is_flag=True, default=False, help="Run LLM-based template detection and alert reduction before correlation (requires ANTHROPIC_API_KEY or GROQ_API_KEY).")
+@click.option("--provider", type=click.Choice(["anthropic", "groq"]), default="anthropic", show_default=True, help="LLM provider used for --smart-correlate.")
 @click.option("--out-html",     default="redsec_report.html",  show_default=True, help="Output HTML report path.")
 @click.option("--out-sec",      default="redsec_rules.conf",   show_default=True, help="Output SEC .conf path.")
 @click.option("--out-json",     default=None, help="Output JSON path (optional).")
@@ -180,6 +189,8 @@ def scan(
     metasploit: Optional[str],
     impacket: Optional[str],
     rules_dir: Optional[str],
+    smart_correlate: bool,
+    provider: str,
     out_html: str,
     out_sec: str,
     out_json: Optional[str],
@@ -195,16 +206,17 @@ def scan(
 
     \b
     1. Parse all provided input files
-    2. Enrich events with MITRE ATT&CK mapping
-    3. Score detection risk for each event
-    4. Correlate events into attack chains
-    5. Export SEC .conf rules file
-    6. Export HTML report
-    7. Optionally export JSON
-    8. Optionally write SEC log file (--out-log)
-    9. Optionally export LogZilla JSON (--out-logzilla-json)
-    10. Optionally push events to LogZilla (--push-logzilla)
-    11. Print summary table
+    2. Optionally run smart correlation: LLM template detection + alert reduction (--smart-correlate)
+    3. Enrich events with MITRE ATT&CK mapping
+    4. Score detection risk for each event
+    5. Correlate events into attack chains
+    6. Export SEC .conf rules file
+    7. Export HTML report
+    8. Optionally export JSON
+    9. Optionally write SEC log file (--out-log)
+    10. Optionally export LogZilla JSON (--out-logzilla-json)
+    11. Optionally push events to LogZilla (--push-logzilla)
+    12. Print summary table
 
     At least one input file must be provided.
     """
@@ -247,7 +259,34 @@ def scan(
         sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Step 2: MITRE ATT&CK enrichment
+    # Step 2: Smart correlation (optional) — LLM template detection + reduction
+    # ------------------------------------------------------------------
+    if smart_correlate:
+        _info("Running smart correlation (LLM template detection)...")
+        try:
+            detector = TemplateDetector(provider=provider)
+            assignments = detector.detect(all_events)
+            reducer = AlertReducer()
+            all_events, metrics = reducer.reduce(all_events, assignments)
+            _ok(
+                f"Smart correlation complete — {metrics.raw_count} -> "
+                f"{metrics.reduced_count} events ({metrics.reduction_pct:.1f}% reduction)"
+            )
+            if metrics.template_coverage:
+                _info("Template coverage (distinct hosts per template):")
+                for label, count in sorted(
+                    metrics.template_coverage.items(), key=lambda item: -item[1]
+                ):
+                    click.echo(f"    {count:>3} host(s) — {label}")
+                _ok(
+                    f"Most widespread template: '{metrics.most_widespread_template}' "
+                    f"({metrics.template_coverage[metrics.most_widespread_template]} hosts)"
+                )
+        except Exception as exc:
+            _warn(f"Smart correlation failed: {exc}. Continuing with raw events.")
+
+    # ------------------------------------------------------------------
+    # Step 3: MITRE ATT&CK enrichment
     # ------------------------------------------------------------------
     _info("Enriching events with MITRE ATT&CK mapping...")
     mapper = MitreMapper()
@@ -256,7 +295,7 @@ def scan(
     _ok(f"MITRE enrichment complete ({len(all_events)} events)")
 
     # ------------------------------------------------------------------
-    # Step 3: Detection risk scoring
+    # Step 4: Detection risk scoring
     # ------------------------------------------------------------------
     _info("Scoring detection risk...")
     scorer = DetectionScorer()
@@ -265,7 +304,7 @@ def scan(
     _ok(f"Detection risk scored (average: {avg_risk:.3f})")
 
     # ------------------------------------------------------------------
-    # Step 4: Correlation
+    # Step 5: Correlation
     # ------------------------------------------------------------------
     _info("Running correlation engine...")
     effective_rules_dir = rules_dir if rules_dir else _DEFAULT_RULES_DIR
@@ -278,7 +317,7 @@ def scan(
         chains = []
 
     # ------------------------------------------------------------------
-    # Step 5: SEC export
+    # Step 6: SEC export
     # ------------------------------------------------------------------
     _info("Exporting SEC .conf file...")
     sec_exporter = SecExporter()
@@ -293,7 +332,7 @@ def scan(
         sec_path = None
 
     # ------------------------------------------------------------------
-    # Step 6: HTML report
+    # Step 7: HTML report
     # ------------------------------------------------------------------
     _info("Generating HTML report...")
     html_exporter = HtmlExporter()
@@ -310,7 +349,7 @@ def scan(
         html_path = None
 
     # ------------------------------------------------------------------
-    # Step 7: JSON export (optional)
+    # Step 8: JSON export (optional)
     # ------------------------------------------------------------------
     json_path: Optional[str] = None
     if out_json:
@@ -322,7 +361,7 @@ def scan(
             _warn(f"JSON export failed: {exc}")
 
     # ------------------------------------------------------------------
-    # Step 8: SEC log file (optional)
+    # Step 9: SEC log file (optional)
     # ------------------------------------------------------------------
     log_path: Optional[str] = None
     if out_log:
@@ -341,7 +380,7 @@ def scan(
             _warn(f"SEC log export failed: {exc}")
 
     # ------------------------------------------------------------------
-    # Step 9: LogZilla JSON export (optional)
+    # Step 10: LogZilla JSON export (optional)
     # ------------------------------------------------------------------
     logzilla_json_path: Optional[str] = None
     if out_logzilla_json:
@@ -356,7 +395,7 @@ def scan(
             _warn(f"LogZilla JSON export failed: {exc}")
 
     # ------------------------------------------------------------------
-    # Step 10: Push to LogZilla (optional)
+    # Step 11: Push to LogZilla (optional)
     # ------------------------------------------------------------------
     if push_logzilla:
         _info("Pushing events to LogZilla...")
@@ -377,7 +416,7 @@ def scan(
                 _warn(f"LogZilla push failed: {exc}")
 
     # ------------------------------------------------------------------
-    # Step 11: Summary table
+    # Step 12: Summary table
     # ------------------------------------------------------------------
     _print_summary(all_events, chains, sec_path, html_path, json_path, log_path, logzilla_json_path)
 

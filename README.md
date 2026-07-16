@@ -231,6 +231,60 @@ and other server errors.
 
 ---
 
+## Smart Correlation (LLM-Based Template Detection)
+
+By default, RedSEC's correlation is entirely rule-based (YAML sequence/pair/
+context/synthetic rules). `--smart-correlate` adds an optional pre-pass that
+uses an LLM to find near-duplicate findings the YAML rules don't know about —
+e.g. the same missing-header or outdated-plugin finding repeated across dozens
+of hosts — and collapses them into a single representative event before the
+rule engine runs.
+
+This is an implementation of the unsupervised template-mining approach
+described in Vaarandi & Bahsi (2025), "Using Large Language Models for
+Template Detection from Security Event Logs": events are grouped by
+`(tool, event_type)`, each group is sent to the LLM to cluster into templates
+and label them in plain English, and the resulting clusters drive alert
+reduction — no predefined rules or training data required.
+
+**Usage:**
+
+    redsec scan --nmap scan.xml --nuclei findings.jsonl \
+      --smart-correlate --provider groq
+
+    redsec scan --nmap scan.xml --nuclei findings.jsonl \
+      --smart-correlate --provider anthropic
+
+`--provider` selects the LLM backend (`groq` or `anthropic`, default
+`anthropic`). Requires `GROQ_API_KEY` or `ANTHROPIC_API_KEY` to be set
+accordingly. If you don't have an `ANTHROPIC_API_KEY` set, use
+`--provider groq` instead — that's what was used to produce the measured
+results below.
+
+**Measured results** (165-event nuclei fixture, mixed real-world findings
+across ~25 hosts):
+
+    raw_count:     165
+    reduced_count: 146
+    reduction_pct: 11.5%
+
+`template_coverage` correctly identified the most widespread root cause in
+the fixture — "Missing X-Frame-Options Security Header" — present on 23
+distinct hosts as a single template, instead of 23 separate unrelated alerts.
+
+**Known limitation:** cross-chunk label merging (combining templates found
+independently by separate LLM calls on large scans) uses `difflib`
+character-level string similarity, which is order-sensitive. It correctly
+merges near-duplicates like "Weak SSL/TLS Cipher Suite Enabled" across
+chunks, but misses semantically identical labels with reordered wording —
+e.g. `"Nginx Default Welcome Page"` vs. `"Default Nginx Welcome Page
+Exposed"` score only 0.67 similarity, below the 0.8 merge threshold, despite
+describing the same finding. A future improvement would use token-set
+overlap or embedding similarity instead of character-level diffing to catch
+these cases.
+
+---
+
 ## Correlation Rule Types
 
 RedSEC supports 4 SEC-compatible correlation rule types:

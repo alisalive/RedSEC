@@ -48,6 +48,7 @@ Thumbs.db
 *.log
 output/
 reports/
+.env
 .claude/ 
 nuclei.jsonl 
 report.html 
